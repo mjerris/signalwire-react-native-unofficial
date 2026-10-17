@@ -52,6 +52,14 @@ the SDK fixes both.
 
 ## `react-native+0.81.5.patch` (repository root `patches/`)
 
+> **Local test builds only. Not for any PR.** This branch (`fix/rn-textinput-drop`) is
+> not proposed to this repository: carrying the patch would make every user of the
+> example build React Native from source. The fix is going to React Native upstream
+> instead. It was merged into `combined/all` (#54) and reverted there (`b7b62aa`,
+> `c547a6e`). Our device and Simulator harness applies this branch's patch, and the
+> source-build settings, to its own build at build time; the committed example
+> stays on the prebuilt React Native.
+
 A fix to React Native's New Architecture TextInput on iOS
 (`RCTTextInputComponentView.mm`), applied by the root `postinstall`
 (patch-package). It is
