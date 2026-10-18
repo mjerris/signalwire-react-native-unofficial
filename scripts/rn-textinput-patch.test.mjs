@@ -20,20 +20,16 @@ test('the patch matches the installed react-native', () => {
   assert.equal(pkg.scripts.postinstall, 'patch-package');
 });
 
-test('updateState: does not write text the field already shows', () => {
+test('updateState: skips text the field already shows, and keeps keys typed during a write', () => {
   const source = readFileSync(join(rnDir, SOURCE), 'utf8');
   const updateState = source.slice(source.indexOf('- (void)updateState:'), source.indexOf('- (void)updateLayoutMetrics:'));
-  assert.match(
-    updateState,
-    /if \(\[attributedString\.string isEqualToString:_backedTextInputView\.attributedText\.string\] &&\s+\(\[attributedString isEqual:_lastStringStateWasUpdatedWith\] \|\| \[self _fieldAlreadyShows:attributedString\]\)\) \{\s+return;\s+\}\s+_comingFromJS = YES;\s+\[self _setAttributedString:attributedString\];/
-  );
-  // A controlled value's state is built from props and has no paragraph style; the field has UIKit's default one,
-  // with its writing direction resolved.
-  const helper = source.slice(source.indexOf('static BOOL RCTIsDefaultParagraphStyle('), source.indexOf('- (BOOL)_textOf:'));
-  assert.match(helper, /- \(BOOL\)_fieldAlreadyShows:/);
-  assert.match(helper, /NSParagraphStyle\.defaultParagraphStyle mutableCopy/);
-  assert.match(helper, /defaultStyle\.lineBreakMode = /);
-  assert.match(helper, /defaultStyle\.baseWritingDirection =/);
+  assert.match(updateState, /\[attributedString isEqual:_lastStringStateWasUpdatedWith\] \|\|\s+RCTTextInputTextShowsAttributedString\(/);
+  assert.match(updateState, /\[self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate\];/);
+  assert.match(source, /_textTypedDuringUpdateFromJS = \[text copy\];/);
+  const utils = readFileSync(join(rnDir, 'React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm'), 'utf8');
+  assert.match(utils, /BOOL RCTTextInputTextShowsAttributedString\(/);
+  assert.match(utils, /static BOOL RCTTextInputParagraphStyleShows\(/);
+  assert.match(utils, /NSRange RCTTextInputChangedRange\(/);
 });
 
 test('the example builds React Native from source, so the patch reaches iOS', () => {
