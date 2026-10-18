@@ -1,5 +1,5 @@
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
-index 577bebe..359c220 100644
+index 577bebe..37c8b1e 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
 @@ -67,6 +67,13 @@ @implementation RCTTextInputComponentView {
@@ -16,7 +16,7 @@ index 577bebe..359c220 100644
    /*
     * Newly initialized default typing attributes contain a no-op NSParagraphStyle and NSShadow. These cause inequality
     * between the AttributedString backing the input and those generated from state. We store these attributes to make
-@@ -346,9 +353,79 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
+@@ -346,9 +353,81 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
    }
  
    if (_mostRecentEventCount == _state->getData().mostRecentEventCount) {
@@ -36,25 +36,29 @@ index 577bebe..359c220 100644
 +             fieldText, attributedString, _backedTextInputView.defaultTextAttributes))) {
 +      return;
 +    }
-+    NSString *textBeforeUpdate = fieldText.string;
-+    _comingFromJS = YES;
-+    _textBeforeUpdateFromJS = textBeforeUpdate;
-+    _textTypedDuringUpdateFromJS = nil;
-+    [self _setAttributedString:attributedString];
-+    _comingFromJS = NO;
-+    // Put back the keys UIKit delivered during the write, which replaced them, and report them to JS as typing.
-+    [self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate];
-+    _textTypedDuringUpdateFromJS = nil;
-+    _textBeforeUpdateFromJS = nil;
++    [self _setAttributedStringFromJS:attributedString];
 +  }
 +}
 +
++// Writes JS's text into the field. UIKit delivers the keys queued behind -setAttributedText: inside it, and the write
++// replaces them: they are put back on top of JS's text and reported to JS as typing.
++- (void)_setAttributedStringFromJS:(NSAttributedString *)attributedString
++{
++  NSString *textBeforeUpdate = _backedTextInputView.attributedText.string;
++  _comingFromJS = YES;
++  _textBeforeUpdateFromJS = textBeforeUpdate;
++  _textTypedDuringUpdateFromJS = nil;
++  [self _setAttributedString:attributedString];
++  _comingFromJS = NO;
++  [self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate writtenText:attributedString.string];
++  _textTypedDuringUpdateFromJS = nil;
++  _textBeforeUpdateFromJS = nil;
++}
++
 +// Applies the edit the user made during the write from JS (`textBeforeUpdate` -> `_textTypedDuringUpdateFromJS`) to
-+// the text JS wrote, with the current typing attributes, and reports it as typing (-textInputDidChange), so JS sees
-+// those keys and can still change or reject them. If JS changed only attributes (e.g. a nested <Text> styled what was
-+// typed), the edit applies where it was made. If JS changed the characters (e.g. upper-casing), only an insertion is
-+// applied, at the same distance from the end of the text.
-+- (void)_restoreTextTypedDuringUpdateFromJS:(NSString *)textBeforeUpdate
++// the text JS wrote (see RCTTextInputTextToRestore), with the current typing attributes, and reports it as typing
++// (-textInputDidChange), so JS sees those keys and can still change or reject them.
++- (void)_restoreTextTypedDuringUpdateFromJS:(NSString *)textBeforeUpdate writtenText:(NSString *)writtenText
 +{
 +  for (int attempt = 0; attempt < 3; attempt++) {
 +    NSString *typedText = _textTypedDuringUpdateFromJS;
@@ -62,21 +66,18 @@ index 577bebe..359c220 100644
 +    if (typedText == nil || [typedText isEqualToString:textBeforeUpdate]) {
 +      return;
 +    }
-+    NSString *writtenText = _backedTextInputView.attributedText.string;
-+    NSRange replaced = RCTTextInputChangedRange(textBeforeUpdate, typedText);
-+    NSUInteger insertedLength = typedText.length - (textBeforeUpdate.length - replaced.length);
-+    NSString *inserted = [typedText substringWithRange:NSMakeRange(replaced.location, insertedLength)];
-+    if (![writtenText isEqualToString:textBeforeUpdate]) {
-+      if (replaced.length > 0 || insertedLength == 0) {
-+        return;
-+      }
-+      NSUInteger distanceFromEnd = textBeforeUpdate.length - replaced.location;
-+      replaced = NSMakeRange(writtenText.length > distanceFromEnd ? writtenText.length - distanceFromEnd : 0, 0);
-+      // Don't split a composed character sequence (an emoji, a flag) of JS's text.
-+      if (replaced.location < writtenText.length) {
-+        replaced.location = [writtenText rangeOfComposedCharacterSequenceAtIndex:replaced.location].location;
-+      }
++    if (![_backedTextInputView.attributedText.string isEqualToString:writtenText]) {
++      // The keys arrived after the write had replaced the text (a multiline view can deliver them there), so the
++      // field still has them: only report them.
++      [self textInputDidChange];
++      return;
 +    }
++    NSRange replaced;
++    NSString *inserted;
++    if (!RCTTextInputTextToRestore(textBeforeUpdate, typedText, writtenText, &replaced, &inserted)) {
++      return;
++    }
++    NSUInteger insertedLength = inserted.length;
 +
 +    NSMutableAttributedString *text = [_backedTextInputView.attributedText mutableCopy];
 +    [text replaceCharactersInRange:replaced
@@ -94,10 +95,11 @@ index 577bebe..359c220 100644
 +    [self textInputDidChange];
 +    // Keys UIKit delivered during this write: the field now holds `text`, apply them on top of it.
 +    textBeforeUpdate = text.string;
++    writtenText = text.string;
    }
  }
  
-@@ -478,6 +555,11 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
+@@ -478,6 +557,11 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
  - (void)textInputDidChange
  {
    if (_comingFromJS) {
@@ -109,11 +111,43 @@ index 577bebe..359c220 100644
      return;
    }
  
+@@ -564,12 +648,17 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+   if (_mostRecentEventCount != eventCount) {
+     return;
+   }
++  NSString *textBeforeUpdate = _backedTextInputView.attributedText.string;
++  NSString *writtenText = nil;
+   _comingFromJS = YES;
++  _textBeforeUpdateFromJS = textBeforeUpdate;
++  _textTypedDuringUpdateFromJS = nil;
+   if (value && ![value isEqualToString:_backedTextInputView.attributedText.string]) {
+     NSAttributedString *attributedString =
+         [[NSAttributedString alloc] initWithString:value attributes:_backedTextInputView.defaultTextAttributes];
+     [self _setAttributedString:attributedString];
+     [self _updateState];
++    writtenText = attributedString.string;
+   }
+ 
+   UITextPosition *startPosition = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
+@@ -586,6 +675,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+     [_backedTextInputView scrollRangeToVisible:NSMakeRange(offsetEnd, 0)];
+   }
+   _comingFromJS = NO;
++  // A controlled `value` that JS changed (e.g. a transform in onChangeText) is written here: keep the keys UIKit
++  // delivered during the write, as -_setAttributedStringFromJS: does.
++  if (writtenText != nil) {
++    [self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate writtenText:writtenText];
++  }
++  _textTypedDuringUpdateFromJS = nil;
++  _textBeforeUpdateFromJS = nil;
+ }
+ 
+ #pragma mark - Default input accessory view
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
-index 5f20d87..27651e0 100644
+index 5f20d87..281b813 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
-@@ -41,6 +41,26 @@ UITextInputPasswordRules *RCTUITextInputPasswordRulesFromString(const std::strin
+@@ -41,6 +41,42 @@ UITextInputPasswordRules *RCTUITextInputPasswordRulesFromString(const std::strin
  
  UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::optional<bool> smartInsertDelete);
  
@@ -132,19 +166,44 @@ index 5f20d87..27651e0 100644
 +
 +/*
 + * The range of `oldText` that an edit replaced to give `newText`: what lies between their common prefix and their
-+ * common suffix. The inserted text is `newText` over the same location, `newText.length - oldText.length + length`
++ * common suffix, widened so it does not split a composed character sequence (an emoji, a flag, a letter with
++ * combining marks). The inserted text is `newText` over the same location, `newText.length - oldText.length + length`
 + * long.
 + */
 +NSRange RCTTextInputChangedRange(NSString *oldText, NSString *newText);
++
++/*
++ * The user typed while JS's text was being written into a focused text input: UIKit delivers keys queued behind
++ * `-setAttributedText:` inside it, and the write replaces them. Given the input's text before the write
++ * (`textBeforeUpdate`), what it held with the keys typed during the write (`typedText`), and the text JS wrote
++ * (`writtenText`), sets the range of `writtenText` to replace and the text to put there, and returns YES; returns NO
++ * if there is nothing to put back. If JS changed only attributes, the user's edit applies where it was made. If JS
++ * changed the characters (e.g. upper-casing), only an insertion is put back, at the same distance from the end.
++ */
++BOOL RCTTextInputTextToRestore(
++    NSString *textBeforeUpdate,
++    NSString *typedText,
++    NSString *writtenText,
++    NSRange *range,
++    NSString *_Nullable *_Nonnull text);
 +
  UIDataDetectorTypes RCTUITextViewDataDetectorTypesFromStringVector(const std::vector<std::string> &dataDetectorTypes);
  
  NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
-index 92467e2..5c1a24b 100644
+index 92467e2..0e3e138 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
-@@ -271,6 +271,84 @@ UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::
+@@ -9,6 +9,8 @@
+ 
+ #import <React/RCTConversions.h>
+ 
++#import <vector>
++
+ using namespace facebook::react;
+ 
+ static NSAttributedString *RCTSanitizeAttributedString(NSAttributedString *attributedString)
+@@ -271,6 +273,139 @@ UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::
        : UITextSmartInsertDeleteTypeDefault;
  }
  
@@ -200,9 +259,10 @@ index 92467e2..5c1a24b 100644
 +    if (style != nil && ![style isKindOfClass:[NSParagraphStyle class]]) {
 +      return NO;
 +    }
-+    if (expected != nil ? !RCTTextInputParagraphStyleShows(style, expected)
-+                        : !(RCTTextInputParagraphStyleShows(style, nil) ||
-+                            RCTTextInputParagraphStyleShows(style, defaultTextAttributes[NSParagraphStyleAttributeName]))) {
++    if (expected != nil
++            ? !RCTTextInputParagraphStyleShows(style, expected)
++            : !(RCTTextInputParagraphStyleShows(style, nil) ||
++                RCTTextInputParagraphStyleShows(style, defaultTextAttributes[NSParagraphStyleAttributeName]))) {
 +      return NO;
 +    }
 +    index = MIN(NSMaxRange(range), NSMaxRange(textInputRange));
@@ -210,20 +270,74 @@ index 92467e2..5c1a24b 100644
 +  return YES;
 +}
 +
++// The end of the composed character sequence (an emoji, a letter with combining marks) that `index` falls in.
++static NSUInteger RCTComposedSequenceBoundaryAtOrAfter(NSString *text, NSUInteger index)
++{
++  if (index == 0 || index >= text.length) {
++    return index;
++  }
++  NSRange sequence = [text rangeOfComposedCharacterSequenceAtIndex:index];
++  return sequence.location < index ? NSMaxRange(sequence) : index;
++}
++
 +NSRange RCTTextInputChangedRange(NSString *oldText, NSString *newText)
 +{
++  std::vector<unichar> oldCharacters(oldText.length);
++  std::vector<unichar> newCharacters(newText.length);
++  [oldText getCharacters:oldCharacters.data() range:NSMakeRange(0, oldText.length)];
++  [newText getCharacters:newCharacters.data() range:NSMakeRange(0, newText.length)];
++  NSUInteger shorter = MIN(oldCharacters.size(), newCharacters.size());
 +  NSUInteger prefix = 0;
-+  NSUInteger shorter = MIN(oldText.length, newText.length);
-+  while (prefix < shorter && [oldText characterAtIndex:prefix] == [newText characterAtIndex:prefix]) {
++  while (prefix < shorter && oldCharacters[prefix] == newCharacters[prefix]) {
 +    prefix++;
 +  }
 +  NSUInteger suffix = 0;
 +  while (suffix < shorter - prefix &&
-+         [oldText characterAtIndex:oldText.length - 1 - suffix] ==
-+             [newText characterAtIndex:newText.length - 1 - suffix]) {
++         oldCharacters[oldCharacters.size() - 1 - suffix] == newCharacters[newCharacters.size() - 1 - suffix]) {
 +    suffix++;
 +  }
++  // Don't split a composed character sequence: the edit starts and ends on sequence boundaries of both texts.
++  if (prefix < oldText.length) {
++    prefix = MIN(prefix, [oldText rangeOfComposedCharacterSequenceAtIndex:prefix].location);
++  }
++  if (prefix < newText.length) {
++    prefix = MIN(prefix, [newText rangeOfComposedCharacterSequenceAtIndex:prefix].location);
++  }
++  suffix = MIN(suffix, MIN(oldText.length, newText.length) - prefix);
++  NSUInteger oldEnd = RCTComposedSequenceBoundaryAtOrAfter(oldText, oldText.length - suffix);
++  NSUInteger newEnd = RCTComposedSequenceBoundaryAtOrAfter(newText, newText.length - suffix);
++  suffix = MIN(oldText.length - oldEnd, newText.length - newEnd);
 +  return NSMakeRange(prefix, oldText.length - prefix - suffix);
++}
++
++BOOL RCTTextInputTextToRestore(
++    NSString *textBeforeUpdate,
++    NSString *typedText,
++    NSString *writtenText,
++    NSRange *range,
++    NSString *_Nullable *_Nonnull text)
++{
++  if ([typedText isEqualToString:textBeforeUpdate]) {
++    return NO;
++  }
++  NSRange replaced = RCTTextInputChangedRange(textBeforeUpdate, typedText);
++  NSUInteger insertedLength = typedText.length - (textBeforeUpdate.length - replaced.length);
++  NSString *inserted = [typedText substringWithRange:NSMakeRange(replaced.location, insertedLength)];
++  if (![writtenText isEqualToString:textBeforeUpdate]) {
++    // JS changed the characters: put back an insertion only, at the same distance from the end of the text.
++    if (replaced.length > 0 || insertedLength == 0) {
++      return NO;
++    }
++    NSUInteger distanceFromEnd = textBeforeUpdate.length - replaced.location;
++    NSUInteger location = writtenText.length > distanceFromEnd ? writtenText.length - distanceFromEnd : 0;
++    if (location < writtenText.length) {
++      location = [writtenText rangeOfComposedCharacterSequenceAtIndex:location].location;
++    }
++    replaced = NSMakeRange(location, 0);
++  }
++  *range = replaced;
++  *text = inserted;
++  return YES;
 +}
 +
  UIDataDetectorTypes RCTUITextViewDataDetectorTypesFromStringVector(const std::vector<std::string> &dataDetectorTypes)

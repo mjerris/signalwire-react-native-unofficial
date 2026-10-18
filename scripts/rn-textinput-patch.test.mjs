@@ -24,12 +24,18 @@ test('updateState: skips text the field already shows, and keeps keys typed duri
   const source = readFileSync(join(rnDir, SOURCE), 'utf8');
   const updateState = source.slice(source.indexOf('- (void)updateState:'), source.indexOf('- (void)updateLayoutMetrics:'));
   assert.match(updateState, /\[attributedString isEqual:_lastStringStateWasUpdatedWith\] \|\|\s+RCTTextInputTextShowsAttributedString\(/);
-  assert.match(updateState, /\[self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate\];/);
+  assert.match(updateState, /\[self _setAttributedStringFromJS:attributedString\];/);
+  assert.match(source, /\[self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate writtenText:attributedString\.string\];/);
+  assert.match(source, /RCTTextInputTextToRestore\(textBeforeUpdate, typedText, writtenText, &replaced, &inserted\)/);
+  // A controlled value JS changed is written by the setTextAndSelection command: it keeps the keys too.
+  const command = source.slice(source.indexOf('- (void)setTextAndSelection:'));
+  assert.match(command.slice(0, command.indexOf('\n}\n')), /\[self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate writtenText:writtenText\];/);
   assert.match(source, /_textTypedDuringUpdateFromJS = \[text copy\];/);
   const utils = readFileSync(join(rnDir, 'React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm'), 'utf8');
   assert.match(utils, /BOOL RCTTextInputTextShowsAttributedString\(/);
   assert.match(utils, /static BOOL RCTTextInputParagraphStyleShows\(/);
   assert.match(utils, /NSRange RCTTextInputChangedRange\(/);
+  assert.match(utils, /BOOL RCTTextInputTextToRestore\(/);
 });
 
 test('the example builds React Native from source, so the patch reaches iOS', () => {
