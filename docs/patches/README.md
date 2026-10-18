@@ -95,8 +95,9 @@ from the second branch's head. It has two parts:
    input's default text attributes and UIKit's default paragraph style as
    insensitive attributes, and whether the input is single-line, to
    `RCTIsAttributedStringEffectivelySame` (`RCTAttributedTextUtils.mm`), which
-   ignores UIKit's line break mode and, in a single-line field, the line
-   height and writing direction. It also accepts what it accepted before (the
+   in a single-line field ignores the line break mode, line height and
+   writing direction (a multiline input still compares the line break
+   mode). It also accepts what it accepted before (the
    initial typing attributes as insensitive attributes), so it never writes
    where unpatched React Native would not. This covers uncontrolled and
    controlled inputs, including `lineHeight`.
@@ -109,7 +110,9 @@ from the second branch's head. It has two parts:
    `_restoreTextTypedDuringUpdateFromJS:` applies that edit to JS's text
    (an insertion only, if JS changed the characters), cut to `maxLength`,
    as an undoable edit, and reports it to JS as typing (onChange, then
-   onSelectionChange). Nothing is restored while IME text is marked.
+   onSelectionChange). Keys UIKit delivers inside that edit land after the
+   restored keys, with the caret after them; a backspace delivered there is
+   dropped. Nothing is restored while IME text is marked.
 
 Results (iOS Simulator, XCUITest `typeText`, fresh field each round) are in
 the upstream drafts.

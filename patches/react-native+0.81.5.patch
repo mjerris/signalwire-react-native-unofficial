@@ -1,8 +1,8 @@
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
-index 577bebe..f283054 100644
+index 577bebe..345347e 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
-@@ -74,6 +74,27 @@ @implementation RCTTextInputComponentView {
+@@ -74,6 +74,30 @@ @implementation RCTTextInputComponentView {
     */
    NSDictionary<NSAttributedStringKey, id> *_originalTypingAttributes;
  
@@ -22,15 +22,18 @@ index 577bebe..f283054 100644
 +  BOOL _keyTypedDuringUpdateFromJS;
 +  BOOL _markedTextDuringUpdateFromJS;
 +  /*
-+   * While -_restoreTextTypedDuringUpdateFromJS:writtenText: puts keys back, the length its edit adds. UIKit can deliver
-+   * more queued keys inside that edit, before it applies: their `maxLength` check counts it.
++   * While -_restoreTextTypedDuringUpdateFromJS:writtenText: puts keys back, the range its edit replaces and the length
++   * it adds (both 0 outside it). UIKit can deliver more queued keys inside that edit, before it applies: their
++   * `maxLength` check counts that length, and a key that edits text before the end of that range is dropped (see
++   * -textInputShouldChangeText:inRange:).
 +   */
++  NSRange _rangeBeingRestored;
 +  NSInteger _lengthBeingRestored;
 +
    BOOL _hasInputAccessoryView;
    CGSize _previousContentSize;
  }
-@@ -346,12 +367,118 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
+@@ -346,12 +370,132 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
    }
  
    if (_mostRecentEventCount == _state->getData().mostRecentEventCount) {
@@ -131,17 +134,31 @@ index 577bebe..f283054 100644
 +  if (replacedRange == nil) {
 +    return;
 +  }
-+  // Put the keys back as UIKit inserts typed text: with the attributes of JS's text before them (the typing
-+  // attributes), and as an edit the user can undo. Keys UIKit delivers inside this edit stay in the field (only
++  // Put the keys back as UIKit inserts typed text: as an edit the user can undo, with the attributes of JS's text
++  // before them (the typing attributes, set after the caret moved). UIKit can deliver more queued keys inside this
++  // edit, before it applies: the caret is put after `replacedRange`, so they land after it, stay in the field (only
 +  // `replacedRange` is replaced) and are reported with it.
-+  [_backedTextInputView setSelectedTextRange:replacedRange notifyDelegate:NO];
-+  [self _updateTypingAttributes];
++  [_backedTextInputView setSelectedTextRange:[_backedTextInputView textRangeFromPosition:replacedEnd
++                                                                              toPosition:replacedEnd]
++                              notifyDelegate:NO];
++  NSAttributedString *textBeforeRestore = _backedTextInputView.attributedText;
++  if (textBeforeRestore.length > 0) {
++    _backedTextInputView.typingAttributes =
++        [textBeforeRestore attributesAtIndex:(replaced.location == 0 ? 0 : replaced.location - 1) effectiveRange:NULL];
++  }
++  NSInteger lengthAdded = (NSInteger)inserted.length - (NSInteger)replaced.length;
 +  _comingFromJS = YES;
-+  _lengthBeingRestored = (NSInteger)inserted.length - (NSInteger)replaced.length;
++  _rangeBeingRestored = replaced;
++  _lengthBeingRestored = lengthAdded;
 +  [_backedTextInputView replaceRange:replacedRange withText:inserted];
++  _rangeBeingRestored = NSMakeRange(0, 0);
 +  _lengthBeingRestored = 0;
-+  NSInteger start = RCTTextInputOffsetAfterEdit(selection.location, replaced, inserted.length);
-+  NSInteger end = RCTTextInputOffsetAfterEdit(selection.location + selection.length, replaced, inserted.length);
++  // The keys UIKit delivered inside the edit follow the restored ones: the selection moves past them too.
++  NSInteger delivered = (NSInteger)_backedTextInputView.attributedText.length - (NSInteger)textBeforeRestore.length -
++      lengthAdded;
++  NSUInteger insertedLength = inserted.length + (NSUInteger)MAX(delivered, (NSInteger)0);
++  NSInteger start = RCTTextInputOffsetAfterEdit(selection.location, replaced, insertedLength);
++  NSInteger end = RCTTextInputOffsetAfterEdit(selection.location + selection.length, replaced, insertedLength);
 +  [self _setSelectedRange:{.location = (int)start, .length = (int)(end - start)}];
 +  [self _updateTypingAttributes];
 +  _comingFromJS = NO;
@@ -152,7 +169,7 @@ index 577bebe..f283054 100644
  - (void)updateLayoutMetrics:(const LayoutMetrics &)layoutMetrics
             oldLayoutMetrics:(const LayoutMetrics &)oldLayoutMetrics
  {
-@@ -448,26 +575,19 @@ - (NSString *)textInputShouldChangeText:(NSString *)text inRange:(NSRange)range
+@@ -448,26 +592,24 @@ - (NSString *)textInputShouldChangeText:(NSString *)text inRange:(NSRange)range
      }
    }
  
@@ -181,6 +198,11 @@ index 577bebe..f283054 100644
    }
  
 -  return text;
++  if (range.location < NSMaxRange(_rangeBeingRestored)) {
++    // UIKit delivers this key inside the edit that puts keys back, before it applies, and it edits text before the
++    // end of the range that edit replaces (a backspace): the edit would then replace other text. The key is dropped.
++    return nil;
++  }
 +  if (_textBeforeUpdateFromJS != nil) {
 +    // UIKit delivers this key during a write from JS: see -textInputDidChange.
 +    _keyTypedDuringUpdateFromJS = YES;
@@ -189,7 +211,7 @@ index 577bebe..f283054 100644
  }
  
  - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text
-@@ -478,6 +598,14 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
+@@ -478,6 +620,14 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
  - (void)textInputDidChange
  {
    if (_comingFromJS) {
@@ -204,7 +226,7 @@ index 577bebe..f283054 100644
      return;
    }
  
-@@ -564,12 +692,14 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -564,12 +714,14 @@ - (void)setTextAndSelection:(NSInteger)eventCount
    if (_mostRecentEventCount != eventCount) {
      return;
    }
@@ -220,7 +242,7 @@ index 577bebe..f283054 100644
    }
  
    UITextPosition *startPosition = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
-@@ -586,6 +716,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -586,6 +738,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
      [_backedTextInputView scrollRangeToVisible:NSMakeRange(offsetEnd, 0)];
    }
    _comingFromJS = NO;
@@ -234,7 +256,7 @@ index 577bebe..f283054 100644
  }
  
  #pragma mark - Default input accessory view
-@@ -867,8 +1004,21 @@ - (BOOL)_textOf:(NSAttributedString *)newText equals:(NSAttributedString *)oldTe
+@@ -867,8 +1026,21 @@ - (BOOL)_textOf:(NSAttributedString *)newText equals:(NSAttributedString *)oldTe
    if (shouldFallbackToBareTextComparison) {
      return [newText.string isEqualToString:oldText.string];
    } else {
@@ -258,10 +280,10 @@ index 577bebe..f283054 100644
  }
  
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
-index 5f20d87..ee47b1d 100644
+index 5f20d87..782fe88 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
-@@ -41,6 +41,41 @@ UITextInputPasswordRules *RCTUITextInputPasswordRulesFromString(const std::strin
+@@ -41,6 +41,42 @@ UITextInputPasswordRules *RCTUITextInputPasswordRulesFromString(const std::strin
  
  UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::optional<bool> smartInsertDelete);
  
@@ -296,7 +318,8 @@ index 5f20d87..ee47b1d 100644
 +
 +/*
 + * Where `offset` in a text lies after `range` of it was replaced by `insertedLength` characters: an offset at or after
-+ * the end of the range moves with the text after it, an offset inside the range moves to the end of the insertion.
++ * the end of the range moves with the text after it, an offset inside the range or at its start moves to the end of
++ * the insertion (the caret of a user who typed over the range).
 + */
 +NSInteger RCTTextInputOffsetAfterEdit(NSInteger offset, NSRange range, NSUInteger insertedLength);
 +
@@ -304,7 +327,7 @@ index 5f20d87..ee47b1d 100644
  
  NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
-index 92467e2..5807c98 100644
+index 92467e2..22af03f 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
 @@ -271,6 +271,111 @@ UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::
@@ -410,7 +433,7 @@ index 92467e2..5807c98 100644
 +  if (offset >= (NSInteger)NSMaxRange(range)) {
 +    return offset + (NSInteger)insertedLength - (NSInteger)range.length;
 +  }
-+  if (offset > (NSInteger)range.location) {
++  if (offset >= (NSInteger)range.location) {
 +    return range.location + insertedLength;
 +  }
 +  return offset;
@@ -420,26 +443,17 @@ index 92467e2..5807c98 100644
  {
    static dispatch_once_t onceToken;
 diff --git a/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.h b/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.h
-index 908cfc0..3101c2d 100644
+index 908cfc0..c81a6d4 100644
 --- a/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.h
 +++ b/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.h
-@@ -44,7 +44,8 @@ void RCTApplyBaselineOffset(NSMutableAttributedString *attributedText);
- /*
-  * Whether two `NSAttributedString` lead to the same underlying displayed text, even if they are not strictly equal.
-  * I.e. is one string substitutable for the other when backing a control (which may have some ignorable attributes
-- * provided).
-+ * provided). The line break mode of paragraph styles is not compared: UIKit sets its own in the text a text input
-+ * shows.
-  */
- BOOL RCTIsAttributedStringEffectivelySame(
-     NSAttributedString *text1,
-@@ -52,6 +53,17 @@ BOOL RCTIsAttributedStringEffectivelySame(
+@@ -52,6 +52,18 @@ BOOL RCTIsAttributedStringEffectivelySame(
      NSDictionary<NSAttributedStringKey, id> *insensitiveAttributes,
      const facebook::react::TextAttributes &baseTextAttributes);
  
 +/*
-+ * The same, where `singleLine` says the control is a single-line text field: it lays its line out with its own
-+ * writing direction and without a line height, so those are not compared either.
++ * The same, where `singleLine` says the control is a single-line text field: it lays its line out with its own line
++ * break mode and writing direction and without a line height (UIKit sets them in the text it shows), so those are not
++ * compared.
 + */
 +BOOL RCTIsAttributedStringEffectivelySame(
 +    NSAttributedString *text1,
@@ -452,7 +466,7 @@ index 908cfc0..3101c2d 100644
  {
    auto eventEmitterPtr = new std::weak_ptr<const facebook::react::EventEmitter>(eventEmitter);
 diff --git a/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm b/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm
-index 1062814..cee7d24 100644
+index 1062814..e1c28d0 100644
 --- a/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm
 +++ b/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm
 @@ -472,7 +472,8 @@ AttributedStringBox RCTAttributedStringBoxFromNSAttributedString(NSAttributedStr
@@ -465,27 +479,25 @@ index 1062814..cee7d24 100644
  {
    if (style1 == nil || style2 == nil) {
      return style1 == nil && style2 == nil;
-@@ -515,6 +516,19 @@ static BOOL RCTIsParagraphStyleEffectivelySame(
+@@ -515,6 +516,17 @@ static BOOL RCTIsParagraphStyleEffectivelySame(
      }
    }
  
-+  // UIKit sets its own line break mode in the text a text input shows, and a single-line text field lays its line out
-+  // with its own writing direction and without a line height: those are not compared.
-+  if (style1.lineBreakMode != style2.lineBreakMode || singleLine) {
++  // A single-line text field lays its line out with its own line break mode and writing direction and without a line
++  // height (UIKit sets them in the text it shows): those are not compared.
++  if (singleLine) {
 +    NSMutableParagraphStyle *mutableStyle2 = [style2 mutableCopy];
 +    style2 = mutableStyle2;
 +    mutableStyle2.lineBreakMode = style1.lineBreakMode;
-+    if (singleLine) {
-+      mutableStyle2.baseWritingDirection = style1.baseWritingDirection;
-+      mutableStyle2.minimumLineHeight = style1.minimumLineHeight;
-+      mutableStyle2.maximumLineHeight = style1.maximumLineHeight;
-+    }
++    mutableStyle2.baseWritingDirection = style1.baseWritingDirection;
++    mutableStyle2.minimumLineHeight = style1.minimumLineHeight;
++    mutableStyle2.maximumLineHeight = style1.maximumLineHeight;
 +  }
 +
    return [style1 isEqual:style2];
  }
  
-@@ -523,14 +537,15 @@ static BOOL RCTIsAttributeEffectivelySame(
+@@ -523,14 +535,15 @@ static BOOL RCTIsAttributeEffectivelySame(
      NSDictionary<NSAttributedStringKey, id> *attributes1,
      NSDictionary<NSAttributedStringKey, id> *attributes2,
      NSDictionary<NSAttributedStringKey, id> *insensitiveAttributes,
@@ -503,7 +515,7 @@ index 1062814..cee7d24 100644
    }
  
    // Otherwise rely on built-in comparison
-@@ -541,7 +556,8 @@ BOOL RCTIsAttributedStringEffectivelySame(
+@@ -541,7 +554,8 @@ BOOL RCTIsAttributedStringEffectivelySame(
      NSAttributedString *text1,
      NSAttributedString *text2,
      NSDictionary<NSAttributedStringKey, id> *insensitiveAttributes,
@@ -513,7 +525,7 @@ index 1062814..cee7d24 100644
  {
    if (![text1.string isEqualToString:text2.string]) {
      return NO;
-@@ -578,7 +594,8 @@ BOOL RCTIsAttributedStringEffectivelySame(
+@@ -578,7 +592,8 @@ BOOL RCTIsAttributedStringEffectivelySame(
                                                                text1Attributes,
                                                                text2Attributes,
                                                                insensitiveAttributes,
@@ -523,7 +535,7 @@ index 1062814..cee7d24 100644
                                                          areAttributesSame = NO;
                                                          *text1Stop = YES;
                                                          *text2Stop = YES;
-@@ -600,7 +617,8 @@ BOOL RCTIsAttributedStringEffectivelySame(
+@@ -600,7 +615,8 @@ BOOL RCTIsAttributedStringEffectivelySame(
                                                                text1Attributes,
                                                                text2Attributes,
                                                                insensitiveAttributes,
@@ -533,7 +545,7 @@ index 1062814..cee7d24 100644
                                                          areAttributesSame = NO;
                                                          *text1Stop = YES;
                                                          *text2Stop = YES;
-@@ -612,3 +630,12 @@ BOOL RCTIsAttributedStringEffectivelySame(
+@@ -612,3 +628,12 @@ BOOL RCTIsAttributedStringEffectivelySame(
  
    return areAttributesSame;
  }
