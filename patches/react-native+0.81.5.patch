@@ -1,22 +1,24 @@
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
-index 577bebe..37c8b1e 100644
+index 577bebe..bae5ee4 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
-@@ -67,6 +67,13 @@ @implementation RCTTextInputComponentView {
+@@ -67,6 +67,15 @@ @implementation RCTTextInputComponentView {
    BOOL _comingFromJS;
    BOOL _didMoveToWindow;
  
 +  /*
-+   * The text the user typed while JS's text was being written (`_comingFromJS`): UIKit delivers keystrokes queued
-+   * behind `-setAttributedText:` inside it. Nil if there were none.
++   * While JS's text is written into the field (`_comingFromJS`), UIKit can deliver the keystrokes queued behind
++   * `-setAttributedText:` inside it, and the write then replaces them. `_textBeforeUpdateFromJS` is the field's text
++   * before the write; `_textTypedDuringUpdateFromJS` is the field's text with those keystrokes (nil if there were
++   * none). See -_restoreTextTypedDuringUpdateFromJS:writtenText:.
 +   */
-+  NSString *_textTypedDuringUpdateFromJS;
 +  NSString *_textBeforeUpdateFromJS;
++  NSString *_textTypedDuringUpdateFromJS;
 +
    /*
     * Newly initialized default typing attributes contain a no-op NSParagraphStyle and NSShadow. These cause inequality
     * between the AttributedString backing the input and those generated from state. We store these attributes to make
-@@ -346,9 +353,81 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
+@@ -346,9 +355,81 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
    }
  
    if (_mostRecentEventCount == _state->getData().mostRecentEventCount) {
@@ -24,11 +26,11 @@ index 577bebe..37c8b1e 100644
 +    // Don't write text the field already shows. Written into a focused field, the write drops keystrokes: UIKit
 +    // delivers the keys queued behind it inside -setAttributedText:, -textInputDidChange ignores them
 +    // (_comingFromJS), and the write then replaces them. Two cases compare unequal in -_textOf:equals: although
-+    // nothing changed, because UIKit gives typed text attributes the state lacks (the default paragraph style,
++    // nothing changed, because UIKit gives typed text attributes the state lacks (its default paragraph style,
 +    // and for the first character in an empty field also the background color and event emitter):
 +    // - the state echoes the text this view last sent (-_updateState) and the field still holds those characters;
 +    // - the state comes from a controlled `value` equal to what was typed: built from props, it has no paragraph
-+    //   style.
++    //   style, or one the field shows differently.
 +    NSAttributedString *fieldText = _backedTextInputView.attributedText;
 +    if ([attributedString.string isEqualToString:fieldText.string] &&
 +        ([attributedString isEqual:_lastStringStateWasUpdatedWith] ||
@@ -99,7 +101,7 @@ index 577bebe..37c8b1e 100644
    }
  }
  
-@@ -478,6 +557,11 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
+@@ -478,6 +559,11 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
  - (void)textInputDidChange
  {
    if (_comingFromJS) {
@@ -111,7 +113,7 @@ index 577bebe..37c8b1e 100644
      return;
    }
  
-@@ -564,12 +648,17 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -564,12 +650,17 @@ - (void)setTextAndSelection:(NSInteger)eventCount
    if (_mostRecentEventCount != eventCount) {
      return;
    }
@@ -129,7 +131,7 @@ index 577bebe..37c8b1e 100644
    }
  
    UITextPosition *startPosition = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
-@@ -586,6 +675,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -586,6 +677,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
      [_backedTextInputView scrollRangeToVisible:NSMakeRange(offsetEnd, 0)];
    }
    _comingFromJS = NO;
