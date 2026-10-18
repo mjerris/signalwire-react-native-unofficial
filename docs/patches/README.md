@@ -91,14 +91,15 @@ The patch is the 0.81.5 port of the two stacked upstream branches
 `prs/upstream-rn-58904-pr2-keep-keys-during-writes.md` in our notes), generated
 from the second branch's head. It has two parts:
 
-1. Writes that change nothing are skipped. `updateState:` skips the state that
-   echoes the text the view sent (`_lastStringStateWasUpdatedWith`, the same
-   object) while the field still shows those characters, and
-   `-_textOf:equals:` passes the input's default text attributes and whether
-   it is single-line to `RCTIsAttributedStringEffectivelySame`
-   (`RCTAttributedTextUtils.mm`), which ignores UIKit's line break mode and,
-   in a single-line field, the line height and writing direction. This covers
-   uncontrolled and controlled inputs, including `lineHeight`.
+1. Writes that change nothing are skipped. `-_textOf:equals:` passes the
+   input's default text attributes and UIKit's default paragraph style as
+   insensitive attributes, and whether the input is single-line, to
+   `RCTIsAttributedStringEffectivelySame` (`RCTAttributedTextUtils.mm`), which
+   ignores UIKit's line break mode and, in a single-line field, the line
+   height and writing direction. It also accepts what it accepted before (the
+   initial typing attributes as insensitive attributes), so it never writes
+   where unpatched React Native would not. This covers uncontrolled and
+   controlled inputs, including `lineHeight`.
 2. A write that is still needed (JS restyles the text, e.g. a nested
    `<Text>`, or transforms it, e.g. upper-casing) no longer loses the keys
    UIKit delivers inside it. A key that goes through
@@ -107,8 +108,8 @@ from the second branch's head. It has two parts:
    so text JS inserts is not duplicated), and
    `_restoreTextTypedDuringUpdateFromJS:` applies that edit to JS's text
    (an insertion only, if JS changed the characters), cut to `maxLength`,
-   as an undoable edit, and reports it to JS as typing. Nothing is restored
-   while IME text is marked.
+   as an undoable edit, and reports it to JS as typing (onChange, then
+   onSelectionChange). Nothing is restored while IME text is marked.
 
 Results (iOS Simulator, XCUITest `typeText`, fresh field each round) are in
 the upstream drafts.

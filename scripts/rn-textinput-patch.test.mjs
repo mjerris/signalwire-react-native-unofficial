@@ -23,11 +23,11 @@ test('the patch matches the installed react-native', () => {
 test('updateState: skips text the field already shows, and keeps keys typed during a write', () => {
   const source = readFileSync(join(rnDir, SOURCE), 'utf8');
   const updateState = source.slice(source.indexOf('- (void)updateState:'), source.indexOf('- (void)updateLayoutMetrics:'));
-  assert.match(updateState, /attributedString == _lastStringStateWasUpdatedWith &&/);
-  assert.match(updateState, /\[self _setAttributedStringFromJS:attributedString\];/);
-  // -_textOf:equals: ignores what UIKit adds to typed text: the input's default attributes, and for a single-line field
-  // the line height and writing direction.
-  assert.match(source, /RCTIsAttributedStringEffectivelySame\(\s*newText, oldText, \[self _insensitiveAttributes\], props\.textAttributes, !props\.multiline\)/);
+  assert.match(updateState, /\[self _setAttributedStringFromJS:RCTNSAttributedStringFromAttributedStringBox\(data\.attributedStringBox\)\];/);
+  // -_textOf:equals: ignores what UIKit adds to typed text: the input's default attributes and paragraph style, and for
+  // a single-line field the line height and writing direction; it still accepts what it accepted before.
+  assert.match(source, /RCTIsAttributedStringEffectivelySame\(\s*newText, oldText, defaultAttributes, props\.textAttributes, !props\.multiline\)/);
+  assert.match(source, /RCTIsAttributedStringEffectivelySame\(\s*newText, oldText, _originalTypingAttributes, props\.textAttributes, !props\.multiline\)/);
   assert.match(source, /\[self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate writtenText:attributedString\.string\];/);
   assert.match(source, /RCTTextInputTextToRestore\(textBeforeUpdate, typedText, writtenText, &replaced, &inserted\)/);
   // A controlled value JS changed is written by the setTextAndSelection command: it keeps the keys too.
@@ -46,7 +46,7 @@ test('updateState: skips text the field already shows, and keeps keys typed duri
     join(rnDir, 'ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm'),
     'utf8'
   );
-  assert.match(attributed, /adjustedStyle2\.lineBreakMode = style1\.lineBreakMode;/);
+  assert.match(attributed, /mutableStyle2\.lineBreakMode = style1\.lineBreakMode;/);
 });
 
 test('the example builds React Native from source, so the patch reaches iOS', () => {
