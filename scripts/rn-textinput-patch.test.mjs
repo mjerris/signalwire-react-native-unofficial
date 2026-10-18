@@ -33,7 +33,7 @@ test('updateState: skips text the field already shows, and keeps keys typed duri
   assert.match(source, /_textTypedDuringUpdateFromJS = \[text copy\];/);
   const utils = readFileSync(join(rnDir, 'React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm'), 'utf8');
   assert.match(utils, /BOOL RCTTextInputTextShowsAttributedString\(/);
-  assert.match(utils, /static BOOL RCTTextInputParagraphStyleShows\(/);
+  assert.match(utils, /static BOOL\s+RCTTextInputParagraphStyleShows\(/);
   assert.match(utils, /NSRange RCTTextInputChangedRange\(/);
   assert.match(utils, /BOOL RCTTextInputTextToRestore\(/);
 });

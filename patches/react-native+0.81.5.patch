@@ -1,5 +1,5 @@
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
-index 577bebe..bae5ee4 100644
+index 577bebe..f505b5f 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
 @@ -67,6 +67,15 @@ @implementation RCTTextInputComponentView {
@@ -18,7 +18,7 @@ index 577bebe..bae5ee4 100644
    /*
     * Newly initialized default typing attributes contain a no-op NSParagraphStyle and NSShadow. These cause inequality
     * between the AttributedString backing the input and those generated from state. We store these attributes to make
-@@ -346,9 +355,81 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
+@@ -346,9 +355,84 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
    }
  
    if (_mostRecentEventCount == _state->getData().mostRecentEventCount) {
@@ -35,7 +35,10 @@ index 577bebe..bae5ee4 100644
 +    if ([attributedString.string isEqualToString:fieldText.string] &&
 +        ([attributedString isEqual:_lastStringStateWasUpdatedWith] ||
 +         RCTTextInputTextShowsAttributedString(
-+             fieldText, attributedString, _backedTextInputView.defaultTextAttributes))) {
++             fieldText,
++             attributedString,
++             _backedTextInputView.defaultTextAttributes,
++             static_cast<const TextInputProps &>(*_props).multiline))) {
 +      return;
 +    }
 +    [self _setAttributedStringFromJS:attributedString];
@@ -101,7 +104,7 @@ index 577bebe..bae5ee4 100644
    }
  }
  
-@@ -478,6 +559,11 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
+@@ -478,6 +562,11 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
  - (void)textInputDidChange
  {
    if (_comingFromJS) {
@@ -113,7 +116,7 @@ index 577bebe..bae5ee4 100644
      return;
    }
  
-@@ -564,12 +650,17 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -564,12 +653,17 @@ - (void)setTextAndSelection:(NSInteger)eventCount
    if (_mostRecentEventCount != eventCount) {
      return;
    }
@@ -131,7 +134,7 @@ index 577bebe..bae5ee4 100644
    }
  
    UITextPosition *startPosition = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
-@@ -586,6 +677,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -586,6 +680,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
      [_backedTextInputView scrollRangeToVisible:NSMakeRange(offsetEnd, 0)];
    }
    _comingFromJS = NO;
@@ -146,10 +149,10 @@ index 577bebe..bae5ee4 100644
  
  #pragma mark - Default input accessory view
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
-index 5f20d87..281b813 100644
+index 5f20d87..bce557b 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
-@@ -41,6 +41,42 @@ UITextInputPasswordRules *RCTUITextInputPasswordRulesFromString(const std::strin
+@@ -41,6 +41,44 @@ UITextInputPasswordRules *RCTUITextInputPasswordRulesFromString(const std::strin
  
  UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::optional<bool> smartInsertDelete);
  
@@ -158,13 +161,15 @@ index 5f20d87..281b813 100644
 + * every attribute `attributedString` sets has the same value in `textInputText`, and every attribute only
 + * `textInputText` has is a default: its value in `defaultTextAttributes`, or UIKit's default paragraph style (which
 + * UIKit gives typed text when the text attributes set no paragraph style). Paragraph styles are compared as UIKit
-+ * shows them: its line break mode, a natural writing direction resolved, and no line height in a single-line text
-+ * field. An attribute that `attributedString` removes is not a default, so that change still counts as a difference.
++ * shows them: its line break mode and a natural writing direction resolved, and in a single-line text field
++ * (`multiline` NO) the field's own writing direction and no line height. An attribute that `attributedString` removes
++ * is not a default, so that change still counts as a difference.
 + */
 +BOOL RCTTextInputTextShowsAttributedString(
 +    NSAttributedString *textInputText,
 +    NSAttributedString *attributedString,
-+    NSDictionary<NSAttributedStringKey, id> *_Nullable defaultTextAttributes);
++    NSDictionary<NSAttributedStringKey, id> *_Nullable defaultTextAttributes,
++    BOOL multiline);
 +
 +/*
 + * The range of `oldText` that an edit replaced to give `newText`: what lies between their common prefix and their
@@ -193,7 +198,7 @@ index 5f20d87..281b813 100644
  
  NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
-index 92467e2..0e3e138 100644
+index 92467e2..c7cc03c 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
 @@ -9,6 +9,8 @@
@@ -205,25 +210,26 @@ index 92467e2..0e3e138 100644
  using namespace facebook::react;
  
  static NSAttributedString *RCTSanitizeAttributedString(NSAttributedString *attributedString)
-@@ -271,6 +273,139 @@ UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::
+@@ -271,6 +273,142 @@ UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::
        : UITextSmartInsertDeleteTypeDefault;
  }
  
 +// Whether a text input showing `style` shows the paragraph style `expected` (nil: UIKit's default paragraph style).
-+// UIKit adjusts the paragraph style of the text a field shows: it sets its own line break mode, resolves a natural
-+// writing direction, and a single-line text field drops the minimum and maximum line height. None of these are
-+// changes to write back.
-+static BOOL RCTTextInputParagraphStyleShows(NSParagraphStyle *_Nullable style, NSParagraphStyle *_Nullable expected)
++// UIKit adjusts the paragraph style of the text it shows: it sets its own line break mode and resolves a natural
++// writing direction. A single-line text field (UITextField) also lays its line out itself: the text it shows has the
++// field's writing direction and no line height, whatever the text was given. None of these are changes to write back.
++static BOOL
++RCTTextInputParagraphStyleShows(NSParagraphStyle *_Nullable style, NSParagraphStyle *_Nullable expected, BOOL multiline)
 +{
 +  NSParagraphStyle *shown = style ?: NSParagraphStyle.defaultParagraphStyle;
 +  NSMutableParagraphStyle *adjusted = [(expected ?: NSParagraphStyle.defaultParagraphStyle) mutableCopy];
 +  adjusted.lineBreakMode = shown.lineBreakMode;
-+  if (adjusted.baseWritingDirection == NSWritingDirectionNatural) {
++  if (!multiline || adjusted.baseWritingDirection == NSWritingDirectionNatural) {
 +    adjusted.baseWritingDirection = shown.baseWritingDirection;
 +  }
-+  if (shown.minimumLineHeight == 0 && shown.maximumLineHeight == 0) {
-+    adjusted.minimumLineHeight = 0;
-+    adjusted.maximumLineHeight = 0;
++  if (!multiline) {
++    adjusted.minimumLineHeight = shown.minimumLineHeight;
++    adjusted.maximumLineHeight = shown.maximumLineHeight;
 +  }
 +  return [shown isEqual:adjusted];
 +}
@@ -231,7 +237,8 @@ index 92467e2..0e3e138 100644
 +BOOL RCTTextInputTextShowsAttributedString(
 +    NSAttributedString *textInputText,
 +    NSAttributedString *attributedString,
-+    NSDictionary<NSAttributedStringKey, id> *_Nullable defaultTextAttributes)
++    NSDictionary<NSAttributedStringKey, id> *_Nullable defaultTextAttributes,
++    BOOL multiline)
 +{
 +  if (![attributedString.string isEqualToString:textInputText.string]) {
 +    return NO;
@@ -261,10 +268,11 @@ index 92467e2..0e3e138 100644
 +    if (style != nil && ![style isKindOfClass:[NSParagraphStyle class]]) {
 +      return NO;
 +    }
-+    if (expected != nil
-+            ? !RCTTextInputParagraphStyleShows(style, expected)
-+            : !(RCTTextInputParagraphStyleShows(style, nil) ||
-+                RCTTextInputParagraphStyleShows(style, defaultTextAttributes[NSParagraphStyleAttributeName]))) {
++    NSParagraphStyle *defaultStyle = defaultTextAttributes[NSParagraphStyleAttributeName];
++    BOOL paragraphStyleShown = expected != nil ? RCTTextInputParagraphStyleShows(style, expected, multiline)
++                                               : (RCTTextInputParagraphStyleShows(style, nil, multiline) ||
++                                                  RCTTextInputParagraphStyleShows(style, defaultStyle, multiline));
++    if (!paragraphStyleShown) {
 +      return NO;
 +    }
 +    index = MIN(NSMaxRange(range), NSMaxRange(textInputRange));
