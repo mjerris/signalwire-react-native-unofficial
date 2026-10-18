@@ -1,79 +1,136 @@
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
-index 577bebe..f505b5f 100644
+index 577bebe..11c1f97 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
-@@ -67,6 +67,15 @@ @implementation RCTTextInputComponentView {
-   BOOL _comingFromJS;
-   BOOL _didMoveToWindow;
+@@ -74,6 +74,31 @@ @implementation RCTTextInputComponentView {
+    */
+   NSDictionary<NSAttributedStringKey, id> *_originalTypingAttributes;
  
 +  /*
-+   * While JS's text is written into the field (`_comingFromJS`), UIKit can deliver the keystrokes queued behind
-+   * `-setAttributedText:` inside it, and the write then replaces them. `_textBeforeUpdateFromJS` is the field's text
-+   * before the write; `_textTypedDuringUpdateFromJS` is the field's text with those keystrokes (nil if there were
-+   * none). See -_restoreTextTypedDuringUpdateFromJS:writtenText:.
++   * The attributes `-_textOf:equals:` treats as defaults: `_originalTypingAttributes` and the backed view's
++   * `defaultTextAttributes`, which UIKit gives typed text (the first character of an empty field also gets their
++   * background color and event emitter) although a state built from props does not carry them. Rebuilt when
++   * `defaultTextAttributes` changes (`_insensitiveAttributesSource`).
++   */
++  NSDictionary<NSAttributedStringKey, id> *_insensitiveAttributes;
++  NSDictionary<NSAttributedStringKey, id> *_insensitiveAttributesSource;
++
++  /*
++   * While JS's text is written into the field, UIKit can deliver the keys queued behind `-setAttributedText:` inside
++   * the write, and the write then replaces them. `_textBeforeUpdateFromJS` is the field's text before the write (nil
++   * outside one). A key that goes through -textInputShouldChangeText:inRange: during the write sets
++   * `_keyTypedDuringUpdateFromJS`, and the change UIKit reports next is recorded in `_textTypedDuringUpdateFromJS`
++   * (and the selection it left in `_selectionTypedDuringUpdateFromJS`).
++   * Other changes reported during the write are the write's own (a text view reports it). A key that leaves marked
++   * text (IME composition) sets `_markedTextDuringUpdateFromJS`: composition is not put back as plain text.
++   * See -_setAttributedStringFromJS: and -_restoreTextTypedDuringUpdateFromJS:writtenText:.
 +   */
 +  NSString *_textBeforeUpdateFromJS;
 +  NSString *_textTypedDuringUpdateFromJS;
++  NSRange _selectionTypedDuringUpdateFromJS;
++  BOOL _keyTypedDuringUpdateFromJS;
++  BOOL _markedTextDuringUpdateFromJS;
 +
-   /*
-    * Newly initialized default typing attributes contain a no-op NSParagraphStyle and NSShadow. These cause inequality
-    * between the AttributedString backing the input and those generated from state. We store these attributes to make
-@@ -346,9 +355,84 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
+   BOOL _hasInputAccessoryView;
+   CGSize _previousContentSize;
+ }
+@@ -346,10 +371,138 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
    }
  
    if (_mostRecentEventCount == _state->getData().mostRecentEventCount) {
+-    _comingFromJS = YES;
+-    [self _setAttributedString:RCTNSAttributedStringFromAttributedStringBox(data.attributedStringBox)];
 +    NSAttributedString *attributedString = RCTNSAttributedStringFromAttributedStringBox(data.attributedStringBox);
-+    // Don't write text the field already shows. Written into a focused field, the write drops keystrokes: UIKit
-+    // delivers the keys queued behind it inside -setAttributedText:, -textInputDidChange ignores them
-+    // (_comingFromJS), and the write then replaces them. Two cases compare unequal in -_textOf:equals: although
-+    // nothing changed, because UIKit gives typed text attributes the state lacks (its default paragraph style,
-+    // and for the first character in an empty field also the background color and event emitter):
-+    // - the state echoes the text this view last sent (-_updateState) and the field still holds those characters;
-+    // - the state comes from a controlled `value` equal to what was typed: built from props, it has no paragraph
-+    //   style, or one the field shows differently.
-+    NSAttributedString *fieldText = _backedTextInputView.attributedText;
-+    if ([attributedString.string isEqualToString:fieldText.string] &&
-+        ([attributedString isEqual:_lastStringStateWasUpdatedWith] ||
-+         RCTTextInputTextShowsAttributedString(
-+             fieldText,
-+             attributedString,
-+             _backedTextInputView.defaultTextAttributes,
-+             static_cast<const TextInputProps &>(*_props).multiline))) {
++    // The state echoes the text this view sent (-_updateState) and the field still shows those characters: nothing to
++    // write. A write into a focused field drops keys: UIKit delivers the keys queued behind -setAttributedText: inside
++    // it, -textInputDidChange ignores them (_comingFromJS) and the write replaces them. -_setAttributedString: skips
++    // the other writes that change nothing visible (see -_textOf:equals:).
++    if (attributedString == _lastStringStateWasUpdatedWith &&
++        [attributedString.string isEqualToString:_backedTextInputView.attributedText.string]) {
 +      return;
 +    }
 +    [self _setAttributedStringFromJS:attributedString];
 +  }
 +}
 +
-+// Writes JS's text into the field. UIKit delivers the keys queued behind -setAttributedText: inside it, and the write
-+// replaces them: they are put back on top of JS's text and reported to JS as typing.
++// Writes JS's text into the field and puts back the keys UIKit delivered during the write.
 +- (void)_setAttributedStringFromJS:(NSAttributedString *)attributedString
 +{
-+  NSString *textBeforeUpdate = _backedTextInputView.attributedText.string;
-+  _comingFromJS = YES;
-+  _textBeforeUpdateFromJS = textBeforeUpdate;
-+  _textTypedDuringUpdateFromJS = nil;
++  NSString *textBeforeUpdate = [self _beginUpdateFromJS];
 +  [self _setAttributedString:attributedString];
 +  _comingFromJS = NO;
 +  [self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate writtenText:attributedString.string];
-+  _textTypedDuringUpdateFromJS = nil;
-+  _textBeforeUpdateFromJS = nil;
 +}
 +
-+// Applies the edit the user made during the write from JS (`textBeforeUpdate` -> `_textTypedDuringUpdateFromJS`) to
-+// the text JS wrote (see RCTTextInputTextToRestore), with the current typing attributes, and reports it as typing
-+// (-textInputDidChange), so JS sees those keys and can still change or reject them.
++// Starts a write from JS (`_comingFromJS`): returns the field's text before it.
++- (NSString *)_beginUpdateFromJS
++{
++  _comingFromJS = YES;
++  _textBeforeUpdateFromJS = [_backedTextInputView.attributedText.string copy];
++  _textTypedDuringUpdateFromJS = nil;
++  _selectionTypedDuringUpdateFromJS = NSMakeRange(0, 0);
++  _keyTypedDuringUpdateFromJS = NO;
++  _markedTextDuringUpdateFromJS = NO;
++  return _textBeforeUpdateFromJS;
++}
++
++- (NSRange)_selectedRange
++{
++  UITextRange *selection = _backedTextInputView.selectedTextRange;
++  NSInteger start = [_backedTextInputView offsetFromPosition:_backedTextInputView.beginningOfDocument
++                                                  toPosition:selection.start];
++  NSInteger end = [_backedTextInputView offsetFromPosition:_backedTextInputView.beginningOfDocument
++                                                toPosition:selection.end];
++  return NSMakeRange(start, end - start);
++}
++
++- (void)_setSelectedRange:(NSRange)range
++{
++  UITextPosition *start = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
++                                                              offset:range.location];
++  UITextPosition *end = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
++                                                            offset:NSMaxRange(range)];
++  if (start != nil && end != nil) {
++    [_backedTextInputView setSelectedTextRange:[_backedTextInputView textRangeFromPosition:start toPosition:end]
++                                notifyDelegate:NO];
++  }
++}
++
++- (void)_endUpdateFromJS
++{
++  _textBeforeUpdateFromJS = nil;
++  _textTypedDuringUpdateFromJS = nil;
++  _selectionTypedDuringUpdateFromJS = NSMakeRange(0, 0);
++  _keyTypedDuringUpdateFromJS = NO;
++  _markedTextDuringUpdateFromJS = NO;
++}
++
++// Applies the edit the user made during the write from JS (`textBeforeUpdate` -> the text the keys left, see
++// RCTTextInputTextToRestore) to the text JS wrote, within `maxLength`, and reports it as typing (-textInputDidChange),
++// so JS receives those keys and can still change or reject them. The selection is mapped through the edit: JS's
++// selection (setTextAndSelection) or the caret the write restored. Nothing is put back while the user composes text
++// (IME marked text): composition is not committed as plain text. UIKit can deliver more queued keys inside the
++// restore's own edit: they are applied in another pass. Each pass only runs for keys that arrived during the previous
++// one; the bound only stops a loop that would never drain.
 +- (void)_restoreTextTypedDuringUpdateFromJS:(NSString *)textBeforeUpdate writtenText:(NSString *)writtenText
 +{
-+  for (int attempt = 0; attempt < 3; attempt++) {
++  static const int kMaxRestorePasses = 8;
++  for (int pass = 0; pass < kMaxRestorePasses; pass++) {
 +    NSString *typedText = _textTypedDuringUpdateFromJS;
-+    _textTypedDuringUpdateFromJS = nil;
-+    if (typedText == nil || [typedText isEqualToString:textBeforeUpdate]) {
++    NSRange typedSelection = _selectionTypedDuringUpdateFromJS;
++    BOOL markedText = _markedTextDuringUpdateFromJS || _backedTextInputView.markedTextRange != nil;
++    [self _endUpdateFromJS];
++    if (typedText == nil || markedText || [typedText isEqualToString:textBeforeUpdate] ||
++        [typedText isEqualToString:writtenText]) {
 +      return;
 +    }
 +    if (![_backedTextInputView.attributedText.string isEqualToString:writtenText]) {
-+      // The keys arrived after the write had replaced the text (a multiline view can deliver them there), so the
-+      // field still has them: only report them.
++      // The keys arrived after the write had replaced the text (a text view can deliver them there), so the field
++      // still has them: only report them. The write then put the caret back where it was before the keys: put it
++      // after them again.
++      if ([_backedTextInputView.attributedText.string isEqualToString:typedText]) {
++        [self _setSelectedRange:typedSelection];
++      }
 +      [self textInputDidChange];
 +      return;
 +    }
@@ -82,49 +139,109 @@ index 577bebe..f505b5f 100644
 +    if (!RCTTextInputTextToRestore(textBeforeUpdate, typedText, writtenText, &replaced, &inserted)) {
 +      return;
 +    }
-+    NSUInteger insertedLength = inserted.length;
++    const auto &props = static_cast<const TextInputProps &>(*_props);
++    if (inserted.length > 0 && props.maxLength < std::numeric_limits<int>::max()) {
++      // UIKit checked these keys against the text before the write.
++      inserted = RCTTextInputTextWithinLength(
++          inserted, (NSInteger)props.maxLength - (NSInteger)writtenText.length + (NSInteger)replaced.length);
++      if (inserted == nil) {
++        return;
++      }
++    }
 +
-+    NSMutableAttributedString *text = [_backedTextInputView.attributedText mutableCopy];
-+    [text replaceCharactersInRange:replaced
-+              withAttributedString:[[NSAttributedString alloc] initWithString:inserted
-+                                                                   attributes:_backedTextInputView.typingAttributes]];
-     _comingFromJS = YES;
--    [self _setAttributedString:RCTNSAttributedStringFromAttributedStringBox(data.attributedStringBox)];
-+    _textBeforeUpdateFromJS = text.string;
-+    _backedTextInputView.attributedText = text;
-+    UITextPosition *caret = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
-+                                                                offset:replaced.location + insertedLength];
-+    [_backedTextInputView setSelectedTextRange:[_backedTextInputView textRangeFromPosition:caret toPosition:caret]
-+                                notifyDelegate:NO];
++    NSRange selection = [self _selectedRange];
++    UITextPosition *replacedStart = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
++                                                                        offset:replaced.location];
++    UITextPosition *replacedEnd = [_backedTextInputView positionFromPosition:replacedStart offset:replaced.length];
++    UITextRange *replacedRange = [_backedTextInputView textRangeFromPosition:replacedStart toPosition:replacedEnd];
++    if (replacedRange == nil) {
++      return;
++    }
++    // Put the keys back as UIKit inserts typed text: with the attributes of JS's text before them (the typing
++    // attributes), and as an edit the user can undo.
++    [_backedTextInputView setSelectedTextRange:replacedRange notifyDelegate:NO];
++    [self _updateTypingAttributes];
++    textBeforeUpdate = [self _beginUpdateFromJS];
++    [_backedTextInputView replaceRange:replacedRange withText:inserted];
++    writtenText = [_backedTextInputView.attributedText.string copy];
++    NSInteger start = RCTTextInputOffsetAfterEdit(selection.location, replaced, inserted.length);
++    NSInteger end = RCTTextInputOffsetAfterEdit(NSMaxRange(selection), replaced, inserted.length);
++    [self _setSelectedRange:NSMakeRange(start, end - start)];
++    [self _updateTypingAttributes];
      _comingFromJS = NO;
 +    [self textInputDidChange];
-+    // Keys UIKit delivered during this write: the field now holds `text`, apply them on top of it.
-+    textBeforeUpdate = text.string;
-+    writtenText = text.string;
    }
++  [self _endUpdateFromJS];
  }
  
-@@ -478,6 +562,11 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
+ - (void)updateLayoutMetrics:(const LayoutMetrics &)layoutMetrics
+@@ -378,6 +531,7 @@ - (void)prepareForRecycle
+   _lastStringStateWasUpdatedWith = nil;
+   _ignoreNextTextInputCall = NO;
+   _didMoveToWindow = NO;
++  [self _endUpdateFromJS];
+   [_backedTextInputView resignFirstResponder];
+ }
+ 
+@@ -448,26 +602,19 @@ - (NSString *)textInputShouldChangeText:(NSString *)text inRange:(NSRange)range
+     }
+   }
+ 
++  NSString *allowedText = text;
+   if (props.maxLength < std::numeric_limits<int>::max()) {
+-    NSInteger allowedLength = props.maxLength - _backedTextInputView.attributedText.string.length + range.length;
+-
+-    if (allowedLength > 0 && text.length > allowedLength) {
+-      // make sure unicode characters that are longer than 16 bits (such as emojis) are not cut off
+-      NSRange cutOffCharacterRange = [text rangeOfComposedCharacterSequenceAtIndex:allowedLength - 1];
+-      if (cutOffCharacterRange.location + cutOffCharacterRange.length > allowedLength) {
+-        // the character at the length limit takes more than 16bits, truncation should end at the character before
+-        allowedLength = cutOffCharacterRange.location;
+-      }
+-    }
+-
+-    if (allowedLength <= 0) {
+-      return nil;
+-    }
+-
+-    return allowedLength > text.length ? text : [text substringToIndex:allowedLength];
++    allowedText = RCTTextInputTextWithinLength(
++        text,
++        (NSInteger)props.maxLength - (NSInteger)_backedTextInputView.attributedText.string.length +
++            (NSInteger)range.length);
+   }
+ 
+-  return text;
++  if (allowedText != nil && _textBeforeUpdateFromJS != nil) {
++    // UIKit delivers this key during a write from JS: see -textInputDidChange.
++    _keyTypedDuringUpdateFromJS = YES;
++  }
++  return allowedText;
+ }
+ 
+ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text
+@@ -478,6 +625,14 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
  - (void)textInputDidChange
  {
    if (_comingFromJS) {
-+    // A change while JS's text is written is the user's (a multiline view also reports the write itself).
-+    NSString *text = _backedTextInputView.attributedText.string;
-+    if (_textBeforeUpdateFromJS != nil && ![text isEqualToString:_textBeforeUpdateFromJS]) {
-+      _textTypedDuringUpdateFromJS = [text copy];
++    // The change a key made during a write from JS (see `_textBeforeUpdateFromJS`). Other changes reported during the
++    // write are the write's own: a text view reports the text JS wrote.
++    if (_keyTypedDuringUpdateFromJS) {
++      _keyTypedDuringUpdateFromJS = NO;
++      _textTypedDuringUpdateFromJS = [_backedTextInputView.attributedText.string copy];
++      _selectionTypedDuringUpdateFromJS = [self _selectedRange];
++      _markedTextDuringUpdateFromJS = _markedTextDuringUpdateFromJS || _backedTextInputView.markedTextRange != nil;
 +    }
      return;
    }
  
-@@ -564,12 +653,17 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -564,12 +719,14 @@ - (void)setTextAndSelection:(NSInteger)eventCount
    if (_mostRecentEventCount != eventCount) {
      return;
    }
-+  NSString *textBeforeUpdate = _backedTextInputView.attributedText.string;
+-  _comingFromJS = YES;
++  NSString *textBeforeUpdate = [self _beginUpdateFromJS];
 +  NSString *writtenText = nil;
-   _comingFromJS = YES;
-+  _textBeforeUpdateFromJS = textBeforeUpdate;
-+  _textTypedDuringUpdateFromJS = nil;
    if (value && ![value isEqualToString:_backedTextInputView.attributedText.string]) {
      NSAttributedString *attributedString =
          [[NSAttributedString alloc] initWithString:value attributes:_backedTextInputView.defaultTextAttributes];
@@ -134,43 +251,62 @@ index 577bebe..f505b5f 100644
    }
  
    UITextPosition *startPosition = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
-@@ -586,6 +680,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -586,6 +743,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
      [_backedTextInputView scrollRangeToVisible:NSMakeRange(offsetEnd, 0)];
    }
    _comingFromJS = NO;
-+  // A controlled `value` that JS changed (e.g. a transform in onChangeText) is written here: keep the keys UIKit
-+  // delivered during the write, as -_setAttributedStringFromJS: does.
++  // A controlled `value` that JS changed (e.g. a transform in onChangeText) is written here: put back the keys UIKit
++  // delivered during the write, keeping JS's selection.
 +  if (writtenText != nil) {
 +    [self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate writtenText:writtenText];
++  } else {
++    [self _endUpdateFromJS];
 +  }
-+  _textTypedDuringUpdateFromJS = nil;
-+  _textBeforeUpdateFromJS = nil;
  }
  
  #pragma mark - Default input accessory view
+@@ -867,11 +1031,32 @@ - (BOOL)_textOf:(NSAttributedString *)newText equals:(NSAttributedString *)oldTe
+   if (shouldFallbackToBareTextComparison) {
+     return [newText.string isEqualToString:oldText.string];
+   } else {
++    const auto &props = static_cast<const TextInputProps &>(*_props);
+     return RCTIsAttributedStringEffectivelySame(
+-        newText, oldText, _originalTypingAttributes, static_cast<const TextInputProps &>(*_props).textAttributes);
++        newText, oldText, [self _insensitiveAttributes], props.textAttributes, !props.multiline);
+   }
+ }
+ 
++// Attributes the text a text input shows may carry although JS's text does not: a state built from props (a
++// controlled `value`) has none of what UIKit adds to typed text, which comes from `defaultTextAttributes` and UIKit's
++// default paragraph style.
++- (NSDictionary<NSAttributedStringKey, id> *)_insensitiveAttributes
++{
++  NSDictionary<NSAttributedStringKey, id> *defaultTextAttributes = _backedTextInputView.defaultTextAttributes;
++  if (_insensitiveAttributes == nil || _insensitiveAttributesSource != defaultTextAttributes) {
++    NSMutableDictionary<NSAttributedStringKey, id> *attributes =
++        [_originalTypingAttributes mutableCopy] ?: [NSMutableDictionary new];
++    [attributes addEntriesFromDictionary:defaultTextAttributes];
++    // Typed text without a paragraph style from the text attributes gets UIKit's default one (its initial typing
++    // attributes have another line break strategy).
++    attributes[NSParagraphStyleAttributeName] =
++        defaultTextAttributes[NSParagraphStyleAttributeName] ?: NSParagraphStyle.defaultParagraphStyle;
++    _insensitiveAttributes = [attributes copy];
++    _insensitiveAttributesSource = defaultTextAttributes;
++  }
++  return _insensitiveAttributes;
++}
++
+ - (SubmitBehavior)getSubmitBehavior
+ {
+   const auto &props = static_cast<const TextInputProps &>(*_props);
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
-index 5f20d87..bce557b 100644
+index 5f20d87..ee47b1d 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.h
-@@ -41,6 +41,44 @@ UITextInputPasswordRules *RCTUITextInputPasswordRulesFromString(const std::strin
+@@ -41,6 +41,41 @@ UITextInputPasswordRules *RCTUITextInputPasswordRulesFromString(const std::strin
  
  UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::optional<bool> smartInsertDelete);
  
-+/*
-+ * Whether `textInputText`, the text a backed text input shows, already shows `attributedString`: the same characters,
-+ * every attribute `attributedString` sets has the same value in `textInputText`, and every attribute only
-+ * `textInputText` has is a default: its value in `defaultTextAttributes`, or UIKit's default paragraph style (which
-+ * UIKit gives typed text when the text attributes set no paragraph style). Paragraph styles are compared as UIKit
-+ * shows them: its line break mode and a natural writing direction resolved, and in a single-line text field
-+ * (`multiline` NO) the field's own writing direction and no line height. An attribute that `attributedString` removes
-+ * is not a default, so that change still counts as a difference.
-+ */
-+BOOL RCTTextInputTextShowsAttributedString(
-+    NSAttributedString *textInputText,
-+    NSAttributedString *attributedString,
-+    NSDictionary<NSAttributedStringKey, id> *_Nullable defaultTextAttributes,
-+    BOOL multiline);
-+
 +/*
 + * The range of `oldText` that an edit replaced to give `newText`: what lies between their common prefix and their
 + * common suffix, widened so it does not split a composed character sequence (an emoji, a flag, a letter with
@@ -194,92 +330,29 @@ index 5f20d87..bce557b 100644
 +    NSRange *range,
 +    NSString *_Nullable *_Nonnull text);
 +
++/*
++ * `text` cut to `allowedLength` (`maxLength`) without splitting a composed character sequence, or nil if no
++ * character fits.
++ */
++NSString *_Nullable RCTTextInputTextWithinLength(NSString *text, NSInteger allowedLength);
++
++/*
++ * Where `offset` in a text lies after `range` of it was replaced by `insertedLength` characters: an offset at or after
++ * the end of the range moves with the text after it, an offset inside the range moves to the end of the insertion.
++ */
++NSInteger RCTTextInputOffsetAfterEdit(NSInteger offset, NSRange range, NSUInteger insertedLength);
++
  UIDataDetectorTypes RCTUITextViewDataDetectorTypesFromStringVector(const std::vector<std::string> &dataDetectorTypes);
  
  NS_ASSUME_NONNULL_END
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
-index 92467e2..c7cc03c 100644
+index 92467e2..5807c98 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm
-@@ -9,6 +9,8 @@
- 
- #import <React/RCTConversions.h>
- 
-+#import <vector>
-+
- using namespace facebook::react;
- 
- static NSAttributedString *RCTSanitizeAttributedString(NSAttributedString *attributedString)
-@@ -271,6 +273,142 @@ UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::
+@@ -271,6 +271,111 @@ UITextSmartInsertDeleteType RCTUITextSmartInsertDeleteTypeFromOptionalBool(std::
        : UITextSmartInsertDeleteTypeDefault;
  }
  
-+// Whether a text input showing `style` shows the paragraph style `expected` (nil: UIKit's default paragraph style).
-+// UIKit adjusts the paragraph style of the text it shows: it sets its own line break mode and resolves a natural
-+// writing direction. A single-line text field (UITextField) also lays its line out itself: the text it shows has the
-+// field's writing direction and no line height, whatever the text was given. None of these are changes to write back.
-+static BOOL
-+RCTTextInputParagraphStyleShows(NSParagraphStyle *_Nullable style, NSParagraphStyle *_Nullable expected, BOOL multiline)
-+{
-+  NSParagraphStyle *shown = style ?: NSParagraphStyle.defaultParagraphStyle;
-+  NSMutableParagraphStyle *adjusted = [(expected ?: NSParagraphStyle.defaultParagraphStyle) mutableCopy];
-+  adjusted.lineBreakMode = shown.lineBreakMode;
-+  if (!multiline || adjusted.baseWritingDirection == NSWritingDirectionNatural) {
-+    adjusted.baseWritingDirection = shown.baseWritingDirection;
-+  }
-+  if (!multiline) {
-+    adjusted.minimumLineHeight = shown.minimumLineHeight;
-+    adjusted.maximumLineHeight = shown.maximumLineHeight;
-+  }
-+  return [shown isEqual:adjusted];
-+}
-+
-+BOOL RCTTextInputTextShowsAttributedString(
-+    NSAttributedString *textInputText,
-+    NSAttributedString *attributedString,
-+    NSDictionary<NSAttributedStringKey, id> *_Nullable defaultTextAttributes,
-+    BOOL multiline)
-+{
-+  if (![attributedString.string isEqualToString:textInputText.string]) {
-+    return NO;
-+  }
-+  NSUInteger index = 0;
-+  while (index < attributedString.length) {
-+    NSRange range;
-+    NSRange textInputRange;
-+    NSDictionary<NSAttributedStringKey, id> *attributes = [attributedString attributesAtIndex:index
-+                                                                               effectiveRange:&range];
-+    NSDictionary<NSAttributedStringKey, id> *textInputAttributes = [textInputText attributesAtIndex:index
-+                                                                                     effectiveRange:&textInputRange];
-+    for (NSAttributedStringKey key in attributes) {
-+      if (![key isEqualToString:NSParagraphStyleAttributeName] && ![attributes[key] isEqual:textInputAttributes[key]]) {
-+        return NO;
-+      }
-+    }
-+    for (NSAttributedStringKey key in textInputAttributes) {
-+      if (![key isEqualToString:NSParagraphStyleAttributeName] && attributes[key] == nil &&
-+          ![textInputAttributes[key] isEqual:defaultTextAttributes[key]]) {
-+        return NO;
-+      }
-+    }
-+    // The paragraph style: the one the string sets, or if it sets none, UIKit's default or the input's default.
-+    id style = textInputAttributes[NSParagraphStyleAttributeName];
-+    id expected = attributes[NSParagraphStyleAttributeName];
-+    if (style != nil && ![style isKindOfClass:[NSParagraphStyle class]]) {
-+      return NO;
-+    }
-+    NSParagraphStyle *defaultStyle = defaultTextAttributes[NSParagraphStyleAttributeName];
-+    BOOL paragraphStyleShown = expected != nil ? RCTTextInputParagraphStyleShows(style, expected, multiline)
-+                                               : (RCTTextInputParagraphStyleShows(style, nil, multiline) ||
-+                                                  RCTTextInputParagraphStyleShows(style, defaultStyle, multiline));
-+    if (!paragraphStyleShown) {
-+      return NO;
-+    }
-+    index = MIN(NSMaxRange(range), NSMaxRange(textInputRange));
-+  }
-+  return YES;
-+}
-+
 +// The end of the composed character sequence (an emoji, a letter with combining marks) that `index` falls in.
 +static NSUInteger RCTComposedSequenceBoundaryAtOrAfter(NSString *text, NSUInteger index)
 +{
@@ -292,32 +365,38 @@ index 92467e2..c7cc03c 100644
 +
 +NSRange RCTTextInputChangedRange(NSString *oldText, NSString *newText)
 +{
-+  std::vector<unichar> oldCharacters(oldText.length);
-+  std::vector<unichar> newCharacters(newText.length);
-+  [oldText getCharacters:oldCharacters.data() range:NSMakeRange(0, oldText.length)];
-+  [newText getCharacters:newCharacters.data() range:NSMakeRange(0, newText.length)];
-+  NSUInteger shorter = MIN(oldCharacters.size(), newCharacters.size());
++  // Read the characters through inline buffers rather than copying both strings.
++  CFStringInlineBuffer oldBuffer;
++  CFStringInlineBuffer newBuffer;
++  CFStringInitInlineBuffer((__bridge CFStringRef)oldText, &oldBuffer, CFRangeMake(0, oldText.length));
++  CFStringInitInlineBuffer((__bridge CFStringRef)newText, &newBuffer, CFRangeMake(0, newText.length));
++  NSUInteger oldLength = oldText.length;
++  NSUInteger newLength = newText.length;
++  NSUInteger shorter = MIN(oldLength, newLength);
 +  NSUInteger prefix = 0;
-+  while (prefix < shorter && oldCharacters[prefix] == newCharacters[prefix]) {
++  while (prefix < shorter &&
++         CFStringGetCharacterFromInlineBuffer(&oldBuffer, prefix) ==
++             CFStringGetCharacterFromInlineBuffer(&newBuffer, prefix)) {
 +    prefix++;
 +  }
 +  NSUInteger suffix = 0;
 +  while (suffix < shorter - prefix &&
-+         oldCharacters[oldCharacters.size() - 1 - suffix] == newCharacters[newCharacters.size() - 1 - suffix]) {
++         CFStringGetCharacterFromInlineBuffer(&oldBuffer, oldLength - 1 - suffix) ==
++             CFStringGetCharacterFromInlineBuffer(&newBuffer, newLength - 1 - suffix)) {
 +    suffix++;
 +  }
 +  // Don't split a composed character sequence: the edit starts and ends on sequence boundaries of both texts.
-+  if (prefix < oldText.length) {
++  if (prefix < oldLength) {
 +    prefix = MIN(prefix, [oldText rangeOfComposedCharacterSequenceAtIndex:prefix].location);
 +  }
-+  if (prefix < newText.length) {
++  if (prefix < newLength) {
 +    prefix = MIN(prefix, [newText rangeOfComposedCharacterSequenceAtIndex:prefix].location);
 +  }
-+  suffix = MIN(suffix, MIN(oldText.length, newText.length) - prefix);
-+  NSUInteger oldEnd = RCTComposedSequenceBoundaryAtOrAfter(oldText, oldText.length - suffix);
-+  NSUInteger newEnd = RCTComposedSequenceBoundaryAtOrAfter(newText, newText.length - suffix);
-+  suffix = MIN(oldText.length - oldEnd, newText.length - newEnd);
-+  return NSMakeRange(prefix, oldText.length - prefix - suffix);
++  suffix = MIN(suffix, shorter - prefix);
++  NSUInteger oldEnd = RCTComposedSequenceBoundaryAtOrAfter(oldText, oldLength - suffix);
++  NSUInteger newEnd = RCTComposedSequenceBoundaryAtOrAfter(newText, newLength - suffix);
++  suffix = MIN(oldLength - oldEnd, newLength - newEnd);
++  return NSMakeRange(prefix, oldLength - prefix - suffix);
 +}
 +
 +BOOL RCTTextInputTextToRestore(
@@ -350,6 +429,347 @@ index 92467e2..c7cc03c 100644
 +  return YES;
 +}
 +
++NSString *_Nullable RCTTextInputTextWithinLength(NSString *text, NSInteger allowedLength)
++{
++  if (allowedLength > 0 && (NSInteger)text.length > allowedLength) {
++    // make sure unicode characters that are longer than 16 bits (such as emojis) are not cut off
++    NSRange cutOffCharacterRange = [text rangeOfComposedCharacterSequenceAtIndex:allowedLength - 1];
++    if ((NSInteger)NSMaxRange(cutOffCharacterRange) > allowedLength) {
++      // the character at the length limit takes more than 16bits, truncation should end at the character before
++      allowedLength = cutOffCharacterRange.location;
++    }
++  }
++
++  if (allowedLength <= 0) {
++    return nil;
++  }
++
++  return allowedLength > (NSInteger)text.length ? text : [text substringToIndex:allowedLength];
++}
++
++NSInteger RCTTextInputOffsetAfterEdit(NSInteger offset, NSRange range, NSUInteger insertedLength)
++{
++  if (offset >= (NSInteger)NSMaxRange(range)) {
++    return offset + (NSInteger)insertedLength - (NSInteger)range.length;
++  }
++  if (offset > (NSInteger)range.location) {
++    return range.location + insertedLength;
++  }
++  return offset;
++}
++
  UIDataDetectorTypes RCTUITextViewDataDetectorTypesFromStringVector(const std::vector<std::string> &dataDetectorTypes)
  {
    static dispatch_once_t onceToken;
+diff --git a/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.h b/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.h
+index 908cfc0..24f8770 100644
+--- a/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.h
++++ b/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.h
+@@ -44,13 +44,17 @@ void RCTApplyBaselineOffset(NSMutableAttributedString *attributedText);
+ /*
+  * Whether two `NSAttributedString` lead to the same underlying displayed text, even if they are not strictly equal.
+  * I.e. is one string substitutable for the other when backing a control (which may have some ignorable attributes
+- * provided).
++ * provided). An attribute that only one string sets is compared with its value in `insensitiveAttributes`.
++ * Paragraph styles are compared as a text input shows them: natural alignment and writing direction resolved, and
++ * the line break mode ignored (UIKit sets its own). `singleLine`: the control is a single-line text field, which
++ * lays its line out with its own writing direction and no line height, so those are ignored too.
+  */
+ BOOL RCTIsAttributedStringEffectivelySame(
+     NSAttributedString *text1,
+     NSAttributedString *text2,
+     NSDictionary<NSAttributedStringKey, id> *insensitiveAttributes,
+-    const facebook::react::TextAttributes &baseTextAttributes);
++    const facebook::react::TextAttributes &baseTextAttributes,
++    BOOL singleLine = NO);
+ 
+ static inline NSData *RCTWrapEventEmitter(const facebook::react::SharedEventEmitter &eventEmitter)
+ {
+diff --git a/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm b/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm
+index 1062814..a3ec0b3 100644
+--- a/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm
++++ b/node_modules/react-native/ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm
+@@ -469,146 +469,170 @@ AttributedStringBox RCTAttributedStringBoxFromNSAttributedString(NSAttributedStr
+   }
+ }
+ 
++// The writing direction a paragraph style lays its text out with: a natural direction resolves to the base writing
++// direction of the text attributes, or else the locale's.
++static NSWritingDirection RCTResolveWritingDirection(
++    NSWritingDirection writingDirection,
++    const TextAttributes &baseTextAttributes)
++{
++  if (writingDirection != NSWritingDirectionNatural) {
++    return writingDirection;
++  }
++  return baseTextAttributes.baseWritingDirection.has_value()
++      ? RCTNSWritingDirectionFromWritingDirection(baseTextAttributes.baseWritingDirection.value())
++      : [NSParagraphStyle defaultWritingDirectionForLanguage:nil];
++}
++
++static NSTextAlignment RCTResolveNaturalAlignment(NSTextAlignment alignment, const TextAttributes &baseTextAttributes)
++{
++  if (alignment != NSTextAlignmentNatural) {
++    return alignment;
++  }
++  return baseTextAttributes.layoutDirection.value_or(LayoutDirection::LeftToRight) == LayoutDirection::LeftToRight
++      ? NSTextAlignmentLeft
++      : NSTextAlignmentRight;
++}
++
+ static BOOL RCTIsParagraphStyleEffectivelySame(
+     NSParagraphStyle *style1,
+     NSParagraphStyle *style2,
+-    const TextAttributes &baseTextAttributes)
++    const TextAttributes &baseTextAttributes,
++    BOOL singleLine)
+ {
+   if (style1 == nil || style2 == nil) {
+     return style1 == nil && style2 == nil;
+   }
++  if (style1 == style2 || [style1 isEqual:style2]) {
++    return YES;
++  }
+ 
+   // The NSParagraphStyle included as part of typingAttributes may eventually resolve "natural" directions to
+   // physical direction, so we should compare resolved directions
+-  auto naturalAlignment =
+-      baseTextAttributes.layoutDirection.value_or(LayoutDirection::LeftToRight) == LayoutDirection::LeftToRight
+-      ? NSTextAlignmentLeft
+-      : NSTextAlignmentRight;
+-
+-  NSWritingDirection naturalBaseWritingDirection = baseTextAttributes.baseWritingDirection.has_value()
+-      ? RCTNSWritingDirectionFromWritingDirection(baseTextAttributes.baseWritingDirection.value())
+-      : [NSParagraphStyle defaultWritingDirectionForLanguage:nil];
++  if (RCTResolveNaturalAlignment(style1.alignment, baseTextAttributes) !=
++      RCTResolveNaturalAlignment(style2.alignment, baseTextAttributes)) {
++    return NO;
++  }
++  // A single-line text field lays its line out with its own writing direction, whatever the text sets.
++  if (!singleLine &&
++      RCTResolveWritingDirection(style1.baseWritingDirection, baseTextAttributes) !=
++          RCTResolveWritingDirection(style2.baseWritingDirection, baseTextAttributes)) {
++    return NO;
++  }
+ 
+-  if (style1.alignment == NSTextAlignmentNatural || style1.baseWritingDirection == NSWritingDirectionNatural) {
+-    NSMutableParagraphStyle *mutableStyle1 = [style1 mutableCopy];
+-    style1 = mutableStyle1;
++  // Compare the other properties: style2 with the values just compared taken from style1. UIKit sets its own line break
++  // mode in the text a text input shows, and a single-line text field shows its text without a line height.
++  NSMutableParagraphStyle *adjustedStyle2 = [style2 mutableCopy];
++  adjustedStyle2.alignment = style1.alignment;
++  adjustedStyle2.baseWritingDirection = style1.baseWritingDirection;
++  adjustedStyle2.lineBreakMode = style1.lineBreakMode;
++  if (singleLine) {
++    adjustedStyle2.minimumLineHeight = style1.minimumLineHeight;
++    adjustedStyle2.maximumLineHeight = style1.maximumLineHeight;
++  }
++  return [style1 isEqual:adjustedStyle2];
++}
+ 
+-    if (mutableStyle1.alignment == NSTextAlignmentNatural) {
+-      mutableStyle1.alignment = naturalAlignment;
++namespace {
++
++// Compares the attributes of two runs. Paragraph styles are compared once per distinct pair: the runs of a string
++// often share them, and the comparison may copy one.
++class RCTAttributesComparator {
++ public:
++  RCTAttributesComparator(
++      NSDictionary<NSAttributedStringKey, id> *insensitiveAttributes,
++      const TextAttributes &baseTextAttributes,
++      BOOL singleLine)
++      : insensitiveAttributes_(insensitiveAttributes), baseTextAttributes_(baseTextAttributes), singleLine_(singleLine)
++  {
++  }
++
++  BOOL areSame(
++      NSDictionary<NSAttributedStringKey, id> *attributes1,
++      NSDictionary<NSAttributedStringKey, id> *attributes2)
++  {
++    // Compare every attribute in attributes1 to the corresponding attribute in attributes2, or the insensitive
++    // attribute if not present
++    for (NSAttributedStringKey key in attributes1) {
++      if (!isAttributeSame(key, attributes1, attributes2)) {
++        return NO;
++      }
+     }
+-
+-    if (mutableStyle1.baseWritingDirection == NSWritingDirectionNatural) {
+-      mutableStyle1.baseWritingDirection = naturalBaseWritingDirection;
++    for (NSAttributedStringKey key in attributes2) {
++      // An attribute present in both was compared above; one only present in attributes2 is compared against the
++      // insensitive attribute
++      if (attributes1[key] == nil && !isAttributeSame(key, attributes1, attributes2)) {
++        return NO;
++      }
+     }
+-  }
+-
+-  if (style2.alignment == NSTextAlignmentNatural || style2.baseWritingDirection == NSWritingDirectionNatural) {
+-    NSMutableParagraphStyle *mutableStyle2 = [style2 mutableCopy];
+-    style2 = mutableStyle2;
+-
+-    if (mutableStyle2.alignment == NSTextAlignmentNatural) {
+-      mutableStyle2.alignment = naturalAlignment;
++    return YES;
++  }
++
++ private:
++  BOOL isAttributeSame(
++      NSAttributedStringKey key,
++      NSDictionary<NSAttributedStringKey, id> *attributes1,
++      NSDictionary<NSAttributedStringKey, id> *attributes2)
++  {
++    id attribute1 = attributes1[key] ?: insensitiveAttributes_[key];
++    id attribute2 = attributes2[key] ?: insensitiveAttributes_[key];
++
++    // Normalize attributes which can inexact but still effectively the same
++    if ([key isEqualToString:NSParagraphStyleAttributeName]) {
++      if (lastStyle1_ != nil && (attribute1 == lastStyle1_ || [attribute1 isEqual:lastStyle1_]) &&
++          (attribute2 == lastStyle2_ || [attribute2 isEqual:lastStyle2_])) {
++        return lastStylesSame_;
++      }
++      lastStyle1_ = attribute1;
++      lastStyle2_ = attribute2;
++      lastStylesSame_ = RCTIsParagraphStyleEffectivelySame(attribute1, attribute2, baseTextAttributes_, singleLine_);
++      return lastStylesSame_;
+     }
+ 
+-    if (mutableStyle2.baseWritingDirection == NSWritingDirectionNatural) {
+-      mutableStyle2.baseWritingDirection = naturalBaseWritingDirection;
+-    }
++    // Otherwise rely on built-in comparison
++    return attribute1 == attribute2 || [attribute1 isEqual:attribute2];
+   }
+ 
+-  return [style1 isEqual:style2];
+-}
++  NSDictionary<NSAttributedStringKey, id> *insensitiveAttributes_;
++  const TextAttributes &baseTextAttributes_;
++  BOOL singleLine_;
++  id lastStyle1_{nil};
++  id lastStyle2_{nil};
++  BOOL lastStylesSame_{NO};
++};
+ 
+-static BOOL RCTIsAttributeEffectivelySame(
+-    NSAttributedStringKey attributeKey,
+-    NSDictionary<NSAttributedStringKey, id> *attributes1,
+-    NSDictionary<NSAttributedStringKey, id> *attributes2,
+-    NSDictionary<NSAttributedStringKey, id> *insensitiveAttributes,
+-    const TextAttributes &baseTextAttributes)
+-{
+-  id attribute1 = attributes1[attributeKey] ?: insensitiveAttributes[attributeKey];
+-  id attribute2 = attributes2[attributeKey] ?: insensitiveAttributes[attributeKey];
+-
+-  // Normalize attributes which can inexact but still effectively the same
+-  if ([attributeKey isEqualToString:NSParagraphStyleAttributeName]) {
+-    return RCTIsParagraphStyleEffectivelySame(attribute1, attribute2, baseTextAttributes);
+-  }
+-
+-  // Otherwise rely on built-in comparison
+-  return [attribute1 isEqual:attribute2];
+-}
++} // namespace
+ 
+ BOOL RCTIsAttributedStringEffectivelySame(
+     NSAttributedString *text1,
+     NSAttributedString *text2,
+     NSDictionary<NSAttributedStringKey, id> *insensitiveAttributes,
+-    const TextAttributes &baseTextAttributes)
++    const TextAttributes &baseTextAttributes,
++    BOOL singleLine)
+ {
+   if (![text1.string isEqualToString:text2.string]) {
+     return NO;
+   }
+ 
+-  // We check that for every fragment in the old string
+-  // 1. The new string's fragment overlapping the first spans the same characters
+-  // 2. The attributes of each matching fragment are the same, ignoring those which match insensitive attibutes
+-  __block BOOL areAttributesSame = YES;
+-  [text1 enumerateAttributesInRange:NSMakeRange(0, text1.length)
+-                            options:0
+-                         usingBlock:^(
+-                             NSDictionary<NSAttributedStringKey, id> *text1Attributes,
+-                             NSRange text1Range,
+-                             BOOL *text1Stop) {
+-                           [text2 enumerateAttributesInRange:text1Range
+-                                                     options:0
+-                                                  usingBlock:^(
+-                                                      NSDictionary<NSAttributedStringKey, id> *text2Attributes,
+-                                                      NSRange text2Range,
+-                                                      BOOL *text2Stop) {
+-                                                    if (!NSEqualRanges(text1Range, text2Range)) {
+-                                                      areAttributesSame = NO;
+-                                                      *text1Stop = YES;
+-                                                      *text2Stop = YES;
+-                                                      return;
+-                                                    }
+-
+-                                                    // Compare every attribute in text1 to the corresponding attribute
+-                                                    // in text2, or the set of insensitive attributes if not present
+-                                                    for (NSAttributedStringKey key in text1Attributes) {
+-                                                      if (!RCTIsAttributeEffectivelySame(
+-                                                              key,
+-                                                              text1Attributes,
+-                                                              text2Attributes,
+-                                                              insensitiveAttributes,
+-                                                              baseTextAttributes)) {
+-                                                        areAttributesSame = NO;
+-                                                        *text1Stop = YES;
+-                                                        *text2Stop = YES;
+-                                                        return;
+-                                                      }
+-                                                    }
+-
+-                                                    for (NSAttributedStringKey key in text2Attributes) {
+-                                                      // We have already compared this attribute if it is present in
+-                                                      // both
+-                                                      if (text1Attributes[key] != nil) {
+-                                                        continue;
+-                                                      }
+-
+-                                                      // But we still need to compare attributes if it is only present
+-                                                      // in text 2, to compare against insensitive attributes
+-                                                      if (!RCTIsAttributeEffectivelySame(
+-                                                              key,
+-                                                              text1Attributes,
+-                                                              text2Attributes,
+-                                                              insensitiveAttributes,
+-                                                              baseTextAttributes)) {
+-                                                        areAttributesSame = NO;
+-                                                        *text1Stop = YES;
+-                                                        *text2Stop = YES;
+-                                                        return;
+-                                                      }
+-                                                    }
+-                                                  }];
+-                         }];
+-
+-  return areAttributesSame;
++  // Walk both strings' attribute runs together. Runs may split differently (an attribute that only one string sets
++  // can still match an insensitive attribute), so every stretch where neither string's run changes is compared once.
++  RCTAttributesComparator comparator{insensitiveAttributes, baseTextAttributes, singleLine};
++  NSUInteger length = text1.length;
++  NSUInteger index = 0;
++  NSRange range1 = NSMakeRange(0, 0);
++  NSRange range2 = NSMakeRange(0, 0);
++  NSDictionary<NSAttributedStringKey, id> *attributes1 = nil;
++  NSDictionary<NSAttributedStringKey, id> *attributes2 = nil;
++  while (index < length) {
++    if (index >= NSMaxRange(range1)) {
++      attributes1 = [text1 attributesAtIndex:index effectiveRange:&range1];
++    }
++    if (index >= NSMaxRange(range2)) {
++      attributes2 = [text2 attributesAtIndex:index effectiveRange:&range2];
++    }
++    if (!comparator.areSame(attributes1, attributes2)) {
++      return NO;
++    }
++    index = MIN(NSMaxRange(range1), NSMaxRange(range2));
++  }
++  return YES;
+ }

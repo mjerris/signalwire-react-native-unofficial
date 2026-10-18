@@ -42,6 +42,10 @@ test('adds one fmt block to post_install, and a second prebuild changes nothing'
   assert.ok(block.includes("next unless target.name == 'fmt'"));
   assert.ok(block.includes("build.build_settings['CLANG_CXX_LANGUAGE_STANDARD'] = 'c++17'"));
   assert.ok(one.podfile.indexOf('post_install do |installer|') < one.podfile.indexOf(BEGIN));
+  // After react_native_post_install, which sets C++20 on every pod, and inside post_install.
+  assert.ok(one.podfile.indexOf('react_native_post_install(') < one.podfile.indexOf(BEGIN));
+  const postInstall = one.podfile.slice(one.podfile.indexOf('post_install do |installer|'));
+  assert.ok(postInstall.indexOf(END) < postInstall.search(/^ {2}end$/m));
 });
 
 test('works next to withPodDeploymentTarget, as the example uses them', async () => {

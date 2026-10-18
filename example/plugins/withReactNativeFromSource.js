@@ -1,5 +1,5 @@
 const { withPodfile, withPodfileProperties } = require('@expo/config-plugins');
-const { mergeContents, withLf } = require('./generatedCode');
+const { createGeneratedHeaderComment, removeContents, withLf } = require('./generatedCode');
 
 const TAG = 'withReactNativeFromSource';
 const POST_INSTALL = /^[ \t]*post_install do \|(\w+)\|[ \t]*$/m;
@@ -36,20 +36,25 @@ function block(installer) {
     end`;
 }
 
+// The tagged block goes at the end of post_install, after react_native_post_install: that call sets C++20 on every
+// pod target, so a setting made before it is overwritten.
 function addFmtBlock(podfile) {
   return withLf(podfile, (contents) => {
-    const postInstall = POST_INSTALL.exec(contents);
+    const src = removeContents({ src: contents, tag: TAG }).contents;
+    const postInstall = POST_INSTALL.exec(src);
     if (!postInstall) {
       throw new Error('withReactNativeFromSource: no `post_install do |installer|` block in the Podfile');
     }
-    return mergeContents({
-      src: contents,
-      newSrc: block(postInstall[1]),
-      tag: TAG,
-      anchor: POST_INSTALL,
-      offset: 1,
-      comment: '    #'
-    }).contents;
+    const indent = /^[ \t]*/.exec(postInstall[0])[0];
+    const afterStart = postInstall.index + postInstall[0].length;
+    const end = new RegExp(`^${indent}end[ \\t]*$`, 'm').exec(src.slice(afterStart));
+    if (!end) {
+      throw new Error('withReactNativeFromSource: no end of the `post_install` block in the Podfile');
+    }
+    const at = afterStart + end.index;
+    const newSrc = block(postInstall[1]);
+    const lines = [createGeneratedHeaderComment(newSrc, TAG, '    #'), newSrc, `    # @generated end ${TAG}`];
+    return `${src.slice(0, at)}${lines.join('\n')}\n${src.slice(at)}`;
   });
 }
 

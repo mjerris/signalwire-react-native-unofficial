@@ -23,19 +23,30 @@ test('the patch matches the installed react-native', () => {
 test('updateState: skips text the field already shows, and keeps keys typed during a write', () => {
   const source = readFileSync(join(rnDir, SOURCE), 'utf8');
   const updateState = source.slice(source.indexOf('- (void)updateState:'), source.indexOf('- (void)updateLayoutMetrics:'));
-  assert.match(updateState, /\[attributedString isEqual:_lastStringStateWasUpdatedWith\] \|\|\s+RCTTextInputTextShowsAttributedString\(/);
+  assert.match(updateState, /attributedString == _lastStringStateWasUpdatedWith &&/);
   assert.match(updateState, /\[self _setAttributedStringFromJS:attributedString\];/);
+  // -_textOf:equals: ignores what UIKit adds to typed text: the input's default attributes, and for a single-line field
+  // the line height and writing direction.
+  assert.match(source, /RCTIsAttributedStringEffectivelySame\(\s*newText, oldText, \[self _insensitiveAttributes\], props\.textAttributes, !props\.multiline\)/);
   assert.match(source, /\[self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate writtenText:attributedString\.string\];/);
   assert.match(source, /RCTTextInputTextToRestore\(textBeforeUpdate, typedText, writtenText, &replaced, &inserted\)/);
   // A controlled value JS changed is written by the setTextAndSelection command: it keeps the keys too.
   const command = source.slice(source.indexOf('- (void)setTextAndSelection:'));
   assert.match(command.slice(0, command.indexOf('\n}\n')), /\[self _restoreTextTypedDuringUpdateFromJS:textBeforeUpdate writtenText:writtenText\];/);
-  assert.match(source, /_textTypedDuringUpdateFromJS = \[text copy\];/);
+  // Only a key that went through -textInputShouldChangeText:inRange: is recorded (a text view also reports the write
+  // itself), restored keys respect maxLength, and marked text is not restored.
+  assert.match(source, /_keyTypedDuringUpdateFromJS = YES;/);
+  assert.match(source, /RCTTextInputTextWithinLength\(\s*inserted,/);
+  assert.match(source, /_backedTextInputView\.markedTextRange != nil/);
   const utils = readFileSync(join(rnDir, 'React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputUtils.mm'), 'utf8');
-  assert.match(utils, /BOOL RCTTextInputTextShowsAttributedString\(/);
-  assert.match(utils, /static BOOL\s+RCTTextInputParagraphStyleShows\(/);
   assert.match(utils, /NSRange RCTTextInputChangedRange\(/);
   assert.match(utils, /BOOL RCTTextInputTextToRestore\(/);
+  assert.match(utils, /RCTTextInputTextWithinLength\(NSString \*text, NSInteger allowedLength\)/);
+  const attributed = readFileSync(
+    join(rnDir, 'ReactCommon/react/renderer/textlayoutmanager/platform/ios/react/renderer/textlayoutmanager/RCTAttributedTextUtils.mm'),
+    'utf8'
+  );
+  assert.match(attributed, /adjustedStyle2\.lineBreakMode = style1\.lineBreakMode;/);
 });
 
 test('the example builds React Native from source, so the patch reaches iOS', () => {

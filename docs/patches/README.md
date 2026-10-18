@@ -84,34 +84,38 @@ native calls:
    behind it. `textInputDidChange` ignores them (`_comingFromJS`), and the
    write then replaces them.
 
-The patch is the 0.81.5 port of the upstream branch
-(`mjerris/react-native` `fix/textinput-state-echo-drops-keys`; see
-`prs/upstream-rn-58904-textinput-echo.md` in our notes). It has two parts:
+The patch is the 0.81.5 port of the two stacked upstream branches
+(`mjerris/react-native` `fix/textinput-skip-noop-writes`, then
+`fix/textinput-keep-keys-during-writes`; see
+`prs/upstream-rn-58904-pr1-skip-noop-writes.md` and
+`prs/upstream-rn-58904-pr2-keep-keys-during-writes.md` in our notes), generated
+from the second branch's head. It has two parts:
 
-1. `updateState:` skips the write when the field already shows the state's
-   text: the same characters, and either the state is the view's own echo
-   (`_lastStringStateWasUpdatedWith`) or `RCTTextInputTextShowsAttributedString`
-   (in `RCTTextInputUtils`) finds every attribute the state sets in the field
-   and every attribute only the field has a default. Paragraph styles are
-   compared as UIKit shows them (its line break mode, a resolved writing
-   direction, no line height in a single-line field). This covers
+1. Writes that change nothing are skipped. `updateState:` skips the state that
+   echoes the text the view sent (`_lastStringStateWasUpdatedWith`, the same
+   object) while the field still shows those characters, and
+   `-_textOf:equals:` passes the input's default text attributes and whether
+   it is single-line to `RCTIsAttributedStringEffectivelySame`
+   (`RCTAttributedTextUtils.mm`), which ignores UIKit's line break mode and,
+   in a single-line field, the line height and writing direction. This covers
    uncontrolled and controlled inputs, including `lineHeight`.
 2. A write that is still needed (JS restyles the text, e.g. a nested
    `<Text>`, or transforms it, e.g. upper-casing) no longer loses the keys
-   UIKit delivers inside it: `textInputDidChange` records the text typed
-   during the write, and `_restoreTextTypedDuringUpdateFromJS:` applies that
-   edit to JS's text (an insertion only, if JS changed the characters) and
-   reports it to JS as typing, so JS can still change or reject it.
+   UIKit delivers inside it. A key that goes through
+   `textInputShouldChangeText:inRange:` during the write is recorded (a
+   multiline text view also reports the write itself, which is not recorded,
+   so text JS inserts is not duplicated), and
+   `_restoreTextTypedDuringUpdateFromJS:` applies that edit to JS's text
+   (an insertion only, if JS changed the characters), cut to `maxLength`,
+   as an undoable edit, and reports it to JS as typing. Nothing is restored
+   while IME text is marked.
 
 Results (iOS Simulator, XCUITest `typeText`, fresh field each round) are in
-the upstream draft: the issue's reproducer, controlled, multiline, nested
-`<Text>`, transforms, IME composition, paste, emoji, selection, undo, RTL,
-`letterSpacing`, alignment, Dynamic Type, secure entry, long text.
+the upstream drafts.
 
 `scripts/rn-textinput-patch.test.mjs` (in `npm test`) checks that the
 installed React Native is 0.81.5 with the fix. On this branch the example's
-`withReactNativeFromSource` plugin builds React Native from source; its fmt
-C++17 block lands before `react_native_post_install`, which sets C++20 on
-every pod, so with Xcode 26.4+ that build fails in fmt. Our harness does not
-use the plugin (it edits the Podfile itself, after `react_native_post_install`).
+`withReactNativeFromSource` plugin builds React Native from source and puts
+the fmt C++17 block at the end of `post_install`, after
+`react_native_post_install` (which sets C++20 on every pod).
 Drop the patch once React Native ships a fix.
