@@ -1,5 +1,5 @@
 diff --git a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
-index 577bebe..345347e 100644
+index 577bebe..6f760f7 100644
 --- a/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
 +++ b/node_modules/react-native/React/Fabric/Mounting/ComponentViews/TextInput/RCTTextInputComponentView.mm
 @@ -74,6 +74,30 @@ @implementation RCTTextInputComponentView {
@@ -33,7 +33,7 @@ index 577bebe..345347e 100644
    BOOL _hasInputAccessoryView;
    CGSize _previousContentSize;
  }
-@@ -346,12 +370,132 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
+@@ -346,10 +370,127 @@ - (void)updateState:(const State::Shared &)state oldState:(const State::Shared &
    }
  
    if (_mostRecentEventCount == _state->getData().mostRecentEventCount) {
@@ -74,9 +74,9 @@ index 577bebe..345347e 100644
 +  if (start != nil && end != nil) {
 +    [_backedTextInputView setSelectedTextRange:[_backedTextInputView textRangeFromPosition:start toPosition:end]
 +                                notifyDelegate:NO];
-   }
- }
- 
++  }
++}
++
 +- (void)_endUpdateFromJS
 +{
 +  _textBeforeUpdateFromJS = nil;
@@ -115,7 +115,7 @@ index 577bebe..345347e 100644
 +  NSString *inserted;
 +  if (!RCTTextInputTextToRestore(textBeforeUpdate, typedText, writtenText, &replaced, &inserted)) {
 +    return;
-+  }
+   }
 +  const auto &props = static_cast<const TextInputProps &>(*_props);
 +  if (inserted.length > 0 && props.maxLength < std::numeric_limits<int>::max()) {
 +    // UIKit checked these keys against the text before the write.
@@ -142,10 +142,7 @@ index 577bebe..345347e 100644
 +                                                                              toPosition:replacedEnd]
 +                              notifyDelegate:NO];
 +  NSAttributedString *textBeforeRestore = _backedTextInputView.attributedText;
-+  if (textBeforeRestore.length > 0) {
-+    _backedTextInputView.typingAttributes =
-+        [textBeforeRestore attributesAtIndex:(replaced.location == 0 ? 0 : replaced.location - 1) effectiveRange:NULL];
-+  }
++  [self _updateTypingAttributesSampledAt:replaced.location];
 +  NSInteger lengthAdded = (NSInteger)inserted.length - (NSInteger)replaced.length;
 +  _comingFromJS = YES;
 +  _rangeBeingRestored = replaced;
@@ -154,8 +151,8 @@ index 577bebe..345347e 100644
 +  _rangeBeingRestored = NSMakeRange(0, 0);
 +  _lengthBeingRestored = 0;
 +  // The keys UIKit delivered inside the edit follow the restored ones: the selection moves past them too.
-+  NSInteger delivered = (NSInteger)_backedTextInputView.attributedText.length - (NSInteger)textBeforeRestore.length -
-+      lengthAdded;
++  NSInteger delivered =
++      (NSInteger)_backedTextInputView.attributedText.length - (NSInteger)textBeforeRestore.length - lengthAdded;
 +  NSUInteger insertedLength = inserted.length + (NSUInteger)MAX(delivered, (NSInteger)0);
 +  NSInteger start = RCTTextInputOffsetAfterEdit(selection.location, replaced, insertedLength);
 +  NSInteger end = RCTTextInputOffsetAfterEdit(selection.location + selection.length, replaced, insertedLength);
@@ -164,12 +161,10 @@ index 577bebe..345347e 100644
 +  _comingFromJS = NO;
 +  [self textInputDidChange];
 +  [self textInputDidChangeSelection];
-+}
-+
+ }
+ 
  - (void)updateLayoutMetrics:(const LayoutMetrics &)layoutMetrics
-            oldLayoutMetrics:(const LayoutMetrics &)oldLayoutMetrics
- {
-@@ -448,26 +592,24 @@ - (NSString *)textInputShouldChangeText:(NSString *)text inRange:(NSRange)range
+@@ -448,26 +589,24 @@ - (NSString *)textInputShouldChangeText:(NSString *)text inRange:(NSRange)range
      }
    }
  
@@ -211,7 +206,7 @@ index 577bebe..345347e 100644
  }
  
  - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSString *)text
-@@ -478,6 +620,14 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
+@@ -478,6 +617,14 @@ - (BOOL)textInputShouldChangeTextInRange:(NSRange)range replacementText:(NSStrin
  - (void)textInputDidChange
  {
    if (_comingFromJS) {
@@ -226,7 +221,7 @@ index 577bebe..345347e 100644
      return;
    }
  
-@@ -564,12 +714,14 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -564,12 +711,14 @@ - (void)setTextAndSelection:(NSInteger)eventCount
    if (_mostRecentEventCount != eventCount) {
      return;
    }
@@ -242,7 +237,7 @@ index 577bebe..345347e 100644
    }
  
    UITextPosition *startPosition = [_backedTextInputView positionFromPosition:_backedTextInputView.beginningOfDocument
-@@ -586,6 +738,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
+@@ -586,6 +735,13 @@ - (void)setTextAndSelection:(NSInteger)eventCount
      [_backedTextInputView scrollRangeToVisible:NSMakeRange(offsetEnd, 0)];
    }
    _comingFromJS = NO;
@@ -256,7 +251,25 @@ index 577bebe..345347e 100644
  }
  
  #pragma mark - Default input accessory view
-@@ -867,8 +1026,21 @@ - (BOOL)_textOf:(NSAttributedString *)newText equals:(NSAttributedString *)oldTe
+@@ -793,8 +949,16 @@ - (void)_updateTypingAttributes
+   if (_backedTextInputView.attributedText.length > 0 && _backedTextInputView.selectedTextRange != nil) {
+     NSUInteger offsetStart = [_backedTextInputView offsetFromPosition:_backedTextInputView.beginningOfDocument
+                                                            toPosition:_backedTextInputView.selectedTextRange.start];
++    [self _updateTypingAttributesSampledAt:offsetStart];
++  }
++}
+ 
+-    NSUInteger samplePoint = offsetStart == 0 ? 0 : offsetStart - 1;
++// The typing attributes for text inserted at `offset`: the attributes of the character before it, or after it at the
++// start of the field. Used for the caret (-_updateTypingAttributes) and for keys put back after a write from JS.
++- (void)_updateTypingAttributesSampledAt:(NSUInteger)offset
++{
++  if (_backedTextInputView.attributedText.length > 0) {
++    NSUInteger samplePoint = offset == 0 ? 0 : offset - 1;
+     _backedTextInputView.typingAttributes = [_backedTextInputView.attributedText attributesAtIndex:samplePoint
+                                                                                     effectiveRange:NULL];
+   }
+@@ -867,8 +1031,21 @@ - (BOOL)_textOf:(NSAttributedString *)newText equals:(NSAttributedString *)oldTe
    if (shouldFallbackToBareTextComparison) {
      return [newText.string isEqualToString:oldText.string];
    } else {

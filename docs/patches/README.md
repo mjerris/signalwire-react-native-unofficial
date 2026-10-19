@@ -109,10 +109,13 @@ from the second branch's head. It has two parts:
    so text JS inserts is not duplicated), and
    `_restoreTextTypedDuringUpdateFromJS:` applies that edit to JS's text
    (an insertion only, if JS changed the characters), cut to `maxLength`,
-   as an undoable edit, and reports it to JS as typing (onChange, then
-   onSelectionChange). Keys UIKit delivers inside that edit land after the
-   restored keys, with the caret after them; a backspace delivered there is
-   dropped. Nothing is restored while IME text is marked.
+   as an undoable edit with the typing attributes the caret gets there
+   (`_updateTypingAttributesSampledAt:`, shared with `_updateTypingAttributes`),
+   and reports it to JS as typing (onChange, then onSelectionChange). Keys
+   UIKit delivers inside that edit land after the restored keys, with the
+   caret after them; an edit delivered there that starts before the end of
+   the restored range (a backspace, an autocorrection) is dropped. Nothing is
+   restored while IME text is marked.
 
 Results (iOS Simulator, XCUITest `typeText`, fresh field each round) are in
 the upstream drafts.
