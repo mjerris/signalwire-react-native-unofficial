@@ -54,6 +54,15 @@ error with that `status`, such as `TokenFetchError`) through
 concurrent rendering, and seeds from the SDK's synchronous getters rather than
 flashing a default. Every hook is safe with a null call or client.
 
+`dial(destination, options)` takes the SDK's `DialOptions` and passes them to
+`client.dial()` unchanged. Data for the far end goes in `userVariables`, which
+the SDK sends with the call's invite:
+
+```tsx
+const { dial } = useSignalWire();
+await dial('/private/agent', { audio: true, video: false, userVariables: { ticket: '42' } });
+```
+
 ## Platform injection
 
 Two optional props let a host package extend the provider without this package
