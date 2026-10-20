@@ -175,6 +175,28 @@ describe('SignalWireProvider observer wiring', () => {
     });
   });
 
+  it('passes the dial options to the SDK unchanged, userVariables included', async () => {
+    let dial: ((destination: string, options?: object) => Promise<unknown>) | undefined;
+
+    function DialProbe(): React.JSX.Element {
+      dial = useSignalWire().dial;
+      return <span>ok</span>;
+    }
+
+    render(
+      <SignalWireProvider credentialProvider={credentialProvider as never} observer={{ onOutgoingCall: jest.fn() }}>
+        <DialProbe />
+      </SignalWireProvider>
+    );
+
+    const options = { audio: true, video: false, userVariables: { device: 'd1', nonce: 'n1' } };
+    await act(async () => {
+      await dial?.('/public/agent', options);
+    });
+
+    expect(harness.dial).toHaveBeenCalledWith('/public/agent', options);
+  });
+
   it('tolerates an observer that implements neither method', () => {
     expect(() =>
       render(
